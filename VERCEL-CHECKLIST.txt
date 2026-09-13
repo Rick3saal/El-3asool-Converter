@@ -1,0 +1,36 @@
+EL 3ASOOL CONVERTER — VERCEL CHECKLIST
+
+The deployable project is the ROOT of this repository (the folder that contains
+package.json). Import the Git repository instead of uploading a zip.
+
+Vercel > Project > Settings > Build and Deployment (vercel.json already sets
+these; match them if the dashboard shows something else):
+
+Framework Preset:   Vite
+Root Directory:     ./
+Install Command:    npm ci --include=dev
+Build Command:      npm run build
+Output Directory:   dist
+Node.js Version:    22.x
+
+Optional, only after a custom domain is attached:
+Environment Variables > Add:  SITE_URL = https://your-domain.com
+
+Then Deployments > Redeploy > "Ignore build cache" once, so a stale cache from an
+earlier attempt cannot be reused.
+
+The build tooling (vite, the React and Tailwind plugins) is deliberately kept in
+"dependencies", so the build also succeeds if Vercel is configured to omit dev
+dependencies. Do not move them to devDependencies.
+
+Nothing else is required: no server functions, no secrets, no database.
+
+If a build still fails, copy the FIRST red error in the build log. The final line
+"Command npm run build exited with 1" is only a generic summary.
+
+  "vite: command not found"            -> Install Command was changed; use npm ci --include=dev
+  "crypto.hash is not a function"      -> Node.js Version is not 22.x
+  Missing index.html / Module not found -> Root Directory is not ./ (repo root)
+  Deploys but page is blank            -> hard-refresh (Ctrl/Cmd+Shift+R); index.html is
+                                          cached with must-revalidate, a stale preview URL
+                                          or an old deployment is the usual cause
