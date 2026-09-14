@@ -1,0 +1,8 @@
+This folder IS the deployable project root: it directly contains package.json,
+package-lock.json, index.html, vite.config.ts, vercel.json, src/ and public/.
+
+Vercel  -> Root Directory: ./            (import this Git repository; settings come from vercel.json)
+Netlify -> base directory: ./            (settings come from netlify.toml)
+
+Do not upload only index.html, and do not point the Root Directory at src/ or any
+subfolder — the build needs the whole project.

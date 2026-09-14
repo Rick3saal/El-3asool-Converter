@@ -1,0 +1,9 @@
+# Files that must never be uploaded to Vercel.
+# Only the source tree is needed; the build happens on Vercel from package.json.
+node_modules
+dist
+.vercel
+.git
+*.zip
+*.log
+.DS_Store

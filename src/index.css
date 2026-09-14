@@ -1,0 +1,211 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-arabic: "Amiri", "Scheherazade New", "Traditional Arabic", serif;
+  --color-honey: #f5c518;
+  --color-honey-soft: #ffd95e;
+  --color-honey-deep: #c8920a;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #05070d;
+  color: #e2e8f0;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(245, 197, 24, 0.35);
+  color: #fff;
+}
+
+/* ------------------------------------------------------------------ */
+/* Ambient background: aurora + grid + vignette                        */
+/* ------------------------------------------------------------------ */
+
+.app-grid {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.028) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.028) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 35%, transparent 78%);
+  -webkit-mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 35%, transparent 78%);
+}
+
+@keyframes auroraDrift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.55;
+  }
+  50% {
+    transform: translate3d(4%, -3%, 0) scale(1.12);
+    opacity: 0.8;
+  }
+}
+.aurora {
+  animation: auroraDrift 16s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+.aurora-slow {
+  animation: auroraDrift 24s ease-in-out infinite reverse;
+  will-change: transform, opacity;
+}
+
+/* ------------------------------------------------------------------ */
+/* Gold accents                                                        */
+/* ------------------------------------------------------------------ */
+
+.text-gold {
+  background: linear-gradient(180deg, #fff6d6 0%, #f5c518 48%, #b8830a 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.gold-rule {
+  background: linear-gradient(90deg, transparent, rgba(245, 197, 24, 0.55), transparent);
+}
+
+/* Glass surface with a soft gradient hairline border */
+.glass {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0.022) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow:
+    0 1px 0 0 rgba(255, 255, 255, 0.05) inset,
+    0 24px 60px -28px rgba(0, 0, 0, 0.95);
+  backdrop-filter: blur(10px);
+}
+
+.glass-hover {
+  transition:
+    border-color 0.25s ease,
+    box-shadow 0.25s ease,
+    transform 0.25s ease;
+}
+.glass-hover:hover {
+  border-color: rgba(245, 197, 24, 0.26);
+  box-shadow:
+    0 1px 0 0 rgba(255, 255, 255, 0.06) inset,
+    0 0 0 1px rgba(245, 197, 24, 0.07),
+    0 28px 70px -30px rgba(0, 0, 0, 0.98);
+}
+
+/* thin gradient strip used on top of output cards */
+.card-accent {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(245, 197, 24, 0.75),
+    rgba(255, 217, 94, 0.35),
+    transparent
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Scrollbars                                                          */
+/* ------------------------------------------------------------------ */
+
+.sabre-scroll::-webkit-scrollbar {
+  height: 9px;
+  width: 9px;
+}
+.sabre-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 999px;
+}
+.sabre-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(245, 197, 24, 0.38), rgba(245, 197, 24, 0.16));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.sabre-scroll::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(245, 197, 24, 0.6), rgba(245, 197, 24, 0.3));
+  background-clip: padding-box;
+}
+.sabre-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(245, 197, 24, 0.35) rgba(255, 255, 255, 0.04);
+}
+
+/* ------------------------------------------------------------------ */
+/* Motion                                                              */
+/* ------------------------------------------------------------------ */
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.fade-up {
+  animation: fadeUp 0.36s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes spinSlow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin-slow {
+  animation: spinSlow 0.9s linear infinite;
+}
+
+@keyframes glowPulse {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.glow-pulse {
+  animation: glowPulse 2.4s ease-in-out infinite;
+}
+
+/* honey shimmer sweep across the title */
+@keyframes shimmer {
+  0% {
+    background-position: -220% 0;
+  }
+  100% {
+    background-position: 220% 0;
+  }
+}
+.shimmer {
+  background: linear-gradient(
+    100deg,
+    transparent 38%,
+    rgba(255, 255, 255, 0.5) 50%,
+    transparent 62%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 5.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora,
+  .aurora-slow,
+  .shimmer,
+  .glow-pulse,
+  .fade-up {
+    animation: none !important;
+  }
+}

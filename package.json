@@ -1,0 +1,40 @@
+{
+  "name": "sabre-gds-itinerary-converter",
+  "private": true,
+  "version": "1.0.0",
+  "description": "El 3asool Converter — flight itineraries and screenshots into exact Sabre GDS sell entries.",
+  "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "selftest": "tsx scripts/selftest.ts",
+    "selftest:extra": "tsx scripts/extratests.ts",
+    "cathaycheck": "tsx scripts/cathaycheck.ts",
+    "check": "npm run typecheck && npm run selftest && npm run selftest:extra && npm run cathaycheck && npm run build",
+    "deploy:vercel": "npx --yes vercel@latest build --prod && npx --yes vercel@latest deploy --prebuilt --prod"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.1.17",
+    "@vitejs/plugin-react": "^5.1.1",
+    "clsx": "2.1.1",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "tailwind-merge": "3.4.0",
+    "tailwindcss": "^4.1.17",
+    "tesseract.js": "^7.0.0",
+    "vite": "^7.3.2",
+    "vite-plugin-singlefile": "^2.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.17",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "tsx": "^4.23.13",
+    "typescript": "5.9.3"
+  }
+}
