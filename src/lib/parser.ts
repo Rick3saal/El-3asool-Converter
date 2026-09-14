@@ -338,7 +338,9 @@ function extractRouteChains(
     // row style: "UA 929 ORD FRA 130P 400P" — adjacent codes with no arrow
     // belong to the flight on the same line. Only allowed when the line
     // itself contains a real flight (airline code/name + number).
-    const lineCoreRe = /\b[A-Z]{2,3}\s*\d{1,4}\b/;
+    // (?!\d) instead of \b so a class letter glued to the number ("EY 22W")
+    // still counts as a flight core on the line.
+    const lineCoreRe = /\b[A-Z]{2,3}\s*\d{1,4}(?!\d)/;
     const hasCoreOnLine =
       lineCoreRe.test(line) &&
       (() => {
@@ -987,15 +989,25 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
       }
     }
 
-    /* ---- booking class ---- */
+    /* ---- booking class ----
+     * Most authoritative position first: a lone RBD letter directly after the
+     * flight number in Sabre/GDS-style lines — "EY 22 W 14DEC YYZ AUH …" or
+     * "EY 22W 14DEC …". The letter must stand alone (not start a word) and be
+     * followed on the same line by a date, city code or time, so stray letters
+     * can never be mistaken for a class. */
+    {
+      const restOfLine = text.slice(core.end, core.end + 24).split("\n")[0];
+      const rbd = /^\s*([A-Z])(?![A-Za-z])\s*(?:\d|[A-Z]{3}\b)/.exec(restOfLine);
+      if (rbd) w.bookingClass = rbd[1];
+    }
     const clsBag = own("CLASS");
     const nearCabinCls = clsBag.filter(
       (t) => cabins.some((c) => Math.abs(c.start - t.start) < 120) || clsHasKeyword(text, t)
     );
-    if (nearCabinCls.length > 0) {
+    if (!w.bookingClass && nearCabinCls.length > 0) {
       nearCabinCls.sort((a, b) => tokDist(a, core) - tokDist(b, core));
       w.bookingClass = nearCabinCls[0].cls;
-    } else if (clsBag.length > 0 && cabins.length > 0) {
+    } else if (!w.bookingClass && clsBag.length > 0 && cabins.length > 0) {
       const close = clsBag.filter((t) => tokDist(t, core) < 200);
       if (close.length > 0) w.bookingClass = close[0].cls;
     }

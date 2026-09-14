@@ -22,6 +22,7 @@ import {
   lookupLearnedAircraft,
 } from "./learning";
 import { parseExplicitAircraftString } from "./aircraft";
+import { cabinFromBookingClass } from "./cabinClasses";
 
 const DEFAULT_CLASS: Record<Cabin, string> = {
   FIRST: "I",
@@ -96,7 +97,16 @@ export function convertFlights(
       });
       continue;
     }
-    const cabin = f.cabin ?? fallbackCabin;
+    const cabinFromLetter = !f.cabin && f.bookingClass
+      ? cabinFromBookingClass(f.airline, f.bookingClass)
+      : null;
+    const cabin = f.cabin ?? cabinFromLetter ?? fallbackCabin;
+    if (cabinFromLetter) {
+      issues.push({
+        level: "info",
+        text: `${label}${route}: cabin ${cabinFromLetter} inferred from booking class ${f.bookingClass} (${f.airline}).`,
+      });
+    }
     if (!cabin) {
       missingCabinFlights.push(`${label} · ${f.origin} → ${f.dest}`);
       continue;

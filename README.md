@@ -86,7 +86,8 @@ index.html            entry HTML (meta tags, fonts)
 src/App.tsx           the whole UI
 src/lib/parser.ts     deterministic itinerary parser
 src/lib/converter.ts  Sabre sell-entry / itinerary formatting
-src/lib/ai.ts         optional browser-side AI assist (Gemini / OpenAI / custom)
+src/lib/ai.ts         optional browser-side AI assist (Gemini / OpenAI / custom) + online aircraft lookup
+src/lib/cabinClasses.ts booking-class letter → cabin (per-airline maps)
 src/lib/ocr.ts        Tesseract.js OCR for screenshots
 src/lib/learning.ts   self-learning rules kept in localStorage
 scripts/              parser self-tests (run with npm run selftest)
@@ -110,6 +111,28 @@ earlier `vite: command not found` failures. Please don't "tidy" them away.
 
 Copy `.env.example` to `.env` for local overrides. No other variables exist — AI provider keys are
 typed into the app and stored only in that browser's local storage, never in the deployment.
+
+## Cabin & aircraft intelligence
+
+**Booking class → cabin (automatic, offline).** Sabre/GDS-style rows carry a single
+booking-class letter right after the flight number (`EY 22 W 14DEC YYZ AUH …`). That letter's
+meaning is **airline-specific** — `W` is Business on Emirates but Economy elsewhere. The parser
+captures the letter (glued `EY 22W` or spaced `EY 22 W`) and `src/lib/cabinClasses.ts` maps it to
+the cabin using per-airline tables (EY, BA, LH, AF/KL, QR, SQ, MS, TK, CX, AC, JL/NH, …) plus a
+deliberately tiny generic set. A printed cabin word always wins; an unknown/ambiguous letter
+never guesses — it falls through to your manual cabin choice. The letter is also preserved in the
+`<--additional-->` lines and sell entries (`EY 22W 14DEC`).
+
+**Online aircraft lookup (AI Assist, opt-in).** When a segment still shows equipment `---`, you
+can let AI Assist fill it in: enable **AI Assist** and the **🌐 Look up missing aircraft online**
+toggle. With a Gemini key the app asks the model — using **Google Search grounding**, i.e. a real
+online check of the schedule/aircraft for that flight on that date — for the operating type, and
+maps it to the Sabre equipment code through the same mapper the local parser uses (airline-specific
+filings are honored, e.g. Emirates files the 787-10 as `781`). Found aircraft are memorized by
+self-learning so the next conversion of the same flight needs no AI call. Note: search-grounded
+responses are billed per search on your own key; with OpenAI-compatible providers the lookup uses
+the model's own knowledge instead (no live search). Default model is `gemini-3.6-flash`
+(1M-token context); the model field suggests other current Flash/Pro models.
 
 ## Browser requirements on the live site
 
