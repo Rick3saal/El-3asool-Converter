@@ -1,4 +1,6 @@
-import { convertToSabre } from "../src/lib/converter";
+import { convertToSabre, convertFlights } from "../src/lib/converter";
+import { parseItineraryText } from "../src/lib/parser";
+import { cabinFromBookingClass } from "../src/lib/cabinClasses";
 let pass = 0, fail = 0;
 function check(name: string, cond: boolean, detail = "") {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
@@ -887,6 +889,67 @@ Economy (Y) `;
   });
   check("AI: '6h 15m' string -> 375", flex[0].elapsed === 375, String(flex[0].elapsed));
   check("AI: '330' string -> 330", flex[1].elapsed === 330, String(flex[1].elapsed));
+}
+
+// Sabre/GDS-style rows with a lone booking-class letter after the flight number.
+// The letter is airline-specific (W = Business on EY) and must (a) be captured
+// as the booking class, and (b) drive the cabin automatically.
+{
+  const text = `1   EY 22   W 14DEC   YYZ AUH   245P 1235P¥1
+
+2   EY 216   W 15DEC   AUH DEL   230P 720P
+
+3   EY 217   W 15JAN   DEL AUH   855P 1125P
+
+4   EY 21   W 16JAN   AUH YYZ   320A 920A`;
+
+  const parsed = parseItineraryText(text);
+  check("sabre rows: 4 flights", parsed.flights.length === 4, JSON.stringify(parsed.flights.map(f => `${f.airline}${f.number}`)));
+  check("sabre rows: W captured as booking class", parsed.flights.every(f => f.bookingClass === "W"), JSON.stringify(parsed.flights.map(f => f.bookingClass)));
+
+  const r = convert(text);
+  check("sabre rows: 4 segments built (no manual cabin needed)", r.segments.length === 4 && r.missingCabinFlights.length === 0, `segs=${r.segments.length} missing=${r.missingCabinFlights.length}`);
+  check("sabre rows: cabin inferred BUSINESS from W", r.segments.every(s => s.cabin === "BUSINESS"), JSON.stringify(r.segments.map(s => s.cabin)));
+  check("sabre rows: info note about inference", r.issues.some(i => i.level === "info" && i.text.includes("inferred from booking class W")), JSON.stringify(r.issues));
+  check("sabre rows: EY22 line", r.itinerary.includes("1 EY 22 14DEC YYZ AUH 245P 1235P¥1 --- 12.50 0 N  CABIN-BUSINESS"), r.itinerary);
+  check("sabre rows: EY21 line", r.itinerary.includes("4 EY 21 16JAN AUH YYZ 320A 920A --- 15.00 0 N  CABIN-BUSINESS"), r.itinerary);
+  check("sabre rows: additional keeps W", r.itinerary.includes("1 EY 22W 14DEC") && r.itinerary.includes("4 EY 21W 16JAN"), r.itinerary);
+  check("sabre rows: sell entry carries W", r.outbound.includes("0EY22W14DECYYZAUHNN1"), r.outbound);
+}
+
+// Glued class letter ("EY 22W 14DEC") also works, and a class-less row must not
+// inherit a letter from its neighbor.
+{
+  const parsed2 = parseItineraryText(`EY 22W 14DEC YYZ AUH 245P 1235P
+EY 21 16JAN AUH YYZ 320A 920A`);
+  check("glued W: class captured", parsed2.flights.length === 2 && parsed2.flights[0].bookingClass === "W", JSON.stringify(parsed2.flights.map(f => f.bookingClass)));
+  check("no letter: nothing invented for neighbor", parsed2.flights[1].bookingClass === undefined, String(parsed2.flights[1].bookingClass));
+  const r = convertToSabre(`EY 22W 14DEC YYZ AUH 245P 1235P
+EY 21 16JAN AUH YYZ 320A 920A`, "ECONOMY");
+  check("glued W: cabin BUSINESS", r.segments.length === 2 && r.segments[0].cabin === "BUSINESS", String(r.segments[0]?.cabin));
+  check("no letter: falls back to chosen cabin", r.segments[1]?.cabin === "ECONOMY" && r.segments[1]?.bookingClass === "Y", JSON.stringify(r.segments.map(s => `${s.cabin}/${s.bookingClass}`)));
+  check("no letter: no W leaked into the sell class (default Y used)", r.itinerary.includes("2 EY 21Y 16JAN"), r.itinerary);
+}
+
+// Airline-specific letter maps + conservative fallback (unknown letter -> null).
+{
+  check("EY W -> BUSINESS", cabinFromBookingClass("EY", "W") === "BUSINESS");
+  check("EY F -> FIRST", cabinFromBookingClass("EY", "F") === "FIRST");
+  check("EY J -> BUSINESS", cabinFromBookingClass("EY", "J") === "BUSINESS");
+  check("EY Y -> ECONOMY", cabinFromBookingClass("EY", "Y") === "ECONOMY");
+  check("BA W -> BUSINESS", cabinFromBookingClass("BA", "W") === "BUSINESS");
+  check("AC P -> PREMIUM", cabinFromBookingClass("AC", "P") === "PREMIUM");
+  check("generic F -> FIRST", cabinFromBookingClass("XX", "F") === "FIRST");
+  check("generic Y -> ECONOMY", cabinFromBookingClass("XX", "Y") === "ECONOMY");
+  check("unknown letter -> null (no guessing)", cabinFromBookingClass("XX", "W") === null);
+  check("non-letter -> null", cabinFromBookingClass("EY", "WW") === null);
+
+  // A printed cabin word always beats the letter map.
+  const r2 = convertFlights(
+    [{ airline: "EY", number: "22", origin: "YYZ", dest: "AUH", date: { day: 14, month: 12 }, dep: 885, arr: 755, arrDay: 0, cabin: "ECONOMY", bookingClass: "W", order: 0 }],
+    null
+  );
+  check("printed cabin word beats letter map", r2.segments[0]?.cabin === "ECONOMY", String(r2.segments[0]?.cabin));
 }
 
 console.log(`\n==== ${pass} passed, ${fail} failed ====`);

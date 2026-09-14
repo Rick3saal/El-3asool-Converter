@@ -21,21 +21,47 @@ export interface AiSettings {
   apiKey: string;
   model: string;
   baseUrl: string; // for "custom" (OpenAI-compatible)
+  /** Fill missing aircraft by checking online (Gemini + Google Search). */
+  searchOnline: boolean;
 }
 
 export const DEFAULT_AI_SETTINGS: AiSettings = {
   enabled: false,
   provider: "gemini",
   apiKey: "",
-  model: "gemini-2.0-flash",
+  model: "gemini-3.6-flash",
   baseUrl: "",
+  searchOnline: true,
 };
 
 export function defaultModelFor(provider: AiProvider): string {
   if (provider === "openai") return "gpt-4o-mini";
   if (provider === "custom") return "gpt-4o-mini";
-  return "gemini-2.0-flash";
+  return "gemini-3.6-flash";
 }
+
+/** Suggested models for the picker (all 1M-token context on Gemini). */
+export const GEMINI_MODEL_SUGGESTIONS = [
+  "gemini-3.6-flash",
+  "gemini-3.7-flash",
+  "gemini-3.8-flash",
+  "gemini-3.5-flash",
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+];
+
+/** Gemini models that support the Google Search grounding tool. */
+const GROUNDING_MODELS = new Set([
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.1-flash-lite",
+  "gemini-3-flash",
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+  "gemini-2.0-flash",
+]);
 
 const SYSTEM_PROMPT = `You are a flight-itinerary extraction engine for a Sabre GDS converter.
 Read the ENTIRE text and return ONLY the real flights as JSON.
@@ -312,4 +338,152 @@ export async function extractFlightsWithAI(text: string, settings: AiSettings): 
   const flights = toRawFlights(json);
   if (flights.length === 0) throw new Error("The AI did not find any flights in that text.");
   return flights;
+}
+
+/* ------------------------------------------------------------------ */
+/* Online aircraft lookup (equipment enrichment)                       */
+/* ------------------------------------------------------------------ */
+
+export interface AircraftLookupQuery {
+  airline: string;
+  number: string;
+  origin: string;
+  dest: string;
+  /** itinerary day/month — the year is the next occurrence of that date */
+  day: number;
+  month: number;
+}
+
+export interface AircraftLookupResult {
+  aircraft: string | null; // e.g. "Airbus A380"
+  equip: string | null; // Sabre equipment code, e.g. "380"
+  confidence: "high" | "medium" | "low";
+  /** true when a live web search (Gemini + Google Search) was used */
+  searched: boolean;
+}
+
+const LOOKUP_SYSTEM_PROMPT = `You are a GDS equipment resolver for Sabre bookings.
+For each numbered flight, determine the AIRCRAFT TYPE that operates it: the actual
+equipment for that airline + flight number + route (prefer what really flies on the
+stated day of the year when a dated schedule can be found). Use the web search results
+when they are available.
+
+For every flight return:
+- "aircraft": the exact type as published (e.g. "Airbus A380", "Boeing 787-10",
+  "Airbus A330-300", "Boeing 777-300ER") or null if truly unknown.
+- "sabreCode": the 3-letter Sabre GDS equipment code this AIRLINE files for that
+  type. Standard examples: A380=380, A350-900=359, A350-1000=351, A330-300=333,
+  A330-200=332, A320=320, A321=321, A321neo=32N, 787-8=788, 787-9=789,
+  787-10=78J, 777-300ER=77W, 777-300=773, 767-300=763, 737-800=738, 737-900=739,
+  737 MAX 8=7M8, 737 MAX 9=7M9, E175=175, E195=E95, CRJ900=900, Q400=DH4.
+  Airlines sometimes file differently — when the airline's own GDS practice can be
+  determined, use that (for example Emirates files the Boeing 787-10 as 781).
+  If you cannot be sure, use null.
+- "confidence": "high" only when a dated schedule or two+ sources confirm the type
+  for this specific route; "medium" for the airline's standard equipment on the
+  route; "low" for a best guess.
+
+Output a single JSON object, no prose:
+{"results":[{"index":1,"aircraft":"Airbus A380","sabreCode":"380","confidence":"high"}]}`;
+
+const MONTH3 = ["", "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+
+/** Normalize a display number to its raw digits ("022" -> "22"). */
+function rawNum(num: string): string {
+  const n = parseInt(num, 10);
+  return Number.isFinite(n) ? String(n) : num;
+}
+
+/**
+ * Ask the configured AI provider what aircraft operate the given flights.
+ * With Gemini this runs WITH Google Search grounding (a real online check) on
+ * any supported model; with OpenAI-compatible providers it falls back to the
+ * model's own knowledge (searchOnline is ignored).
+ */
+export async function lookupAircraftOnline(
+  flights: AircraftLookupQuery[],
+  settings: AiSettings
+): Promise<{ results: Map<string, AircraftLookupResult>; searched: boolean }> {
+  if (!settings.apiKey) throw new Error("No API key configured.");
+  const results = new Map<string, AircraftLookupResult>();
+  if (flights.length === 0) return { results, searched: false };
+
+  const isGemini = settings.provider === "gemini";
+  const model = settings.model || (isGemini ? "gemini-3.6-flash" : "gpt-4o-mini");
+  const searched = isGemini && GROUNDING_MODELS.has(model);
+
+  const list = flights
+    .map(
+      (f, i) =>
+        `${i + 1}. ${f.airline} ${rawNum(f.number)}, ${f.origin} → ${f.dest}, ${f.day} ${MONTH3[f.month] ?? ""}`
+    )
+    .join("\n");
+
+  let content: string;
+  if (isGemini) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(settings.apiKey)}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: LOOKUP_SYSTEM_PROMPT }] },
+        contents: [{ role: "user", parts: [{ text: `Flights:\n${list}` }] }],
+        tools: searched ? [{ google_search: {} }] : undefined,
+        generationConfig: { temperature: 0 },
+      }),
+    });
+    if (!res.ok) throw new Error(`Gemini ${res.status}: ${await safeText(res)}`);
+    const data = await res.json();
+    content = Array.isArray(data?.candidates?.[0]?.content?.parts)
+      ? data.candidates[0].content.parts.map((p: { text?: string }) => p.text || "").join("")
+      : "";
+  } else {
+    const base = (settings.provider === "custom" && settings.baseUrl ? settings.baseUrl : "https://api.openai.com/v1").replace(/\/$/, "");
+    const res = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.apiKey}` },
+      body: JSON.stringify({
+        model,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: LOOKUP_SYSTEM_PROMPT },
+          { role: "user", content: `Flights:\n${list}` },
+        ],
+      }),
+    });
+    if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await safeText(res)}`);
+    const data = await res.json();
+    content = data?.choices?.[0]?.message?.content ?? "";
+  }
+  if (!content) throw new Error("The AI returned no content.");
+
+  const json = extractJson(content) as { results?: Array<{
+    index?: number;
+    airline?: string;
+    flightNumber?: string | number;
+    aircraft?: string | null;
+    sabreCode?: string | null;
+    equipmentCode?: string | null;
+    confidence?: string;
+  }> };
+  for (const r of json.results ?? []) {
+    const query = flights[(Number(r.index) || 1) - 1] ?? null;
+    if (!query) continue;
+    const aircraft = r.aircraft ? String(r.aircraft).trim() : "";
+    const modelCode = String(r.sabreCode ?? r.equipmentCode ?? "").trim().toUpperCase();
+    // The aircraft name goes through the SAME mapper the local parser uses,
+    // so a phrase like "Boeing 787-10" is always converted identically; the
+    // model's own sabreCode wins when it is a plausible 2-3 char GDS code.
+    const mapped = aircraft ? parseExplicitAircraftString(aircraft, query.airline) : null;
+    const code = (/^[A-Z0-9]{2,3}$/.test(modelCode) ? modelCode : null) ?? mapped ?? null;
+    if (!aircraft && !code) continue;
+    results.set(`${query.airline}${rawNum(query.number)}`, {
+      aircraft: aircraft || null,
+      equip: code,
+      confidence: r.confidence === "high" || r.confidence === "medium" ? r.confidence : "low",
+      searched,
+    });
+  }
+  return { results, searched };
 }
