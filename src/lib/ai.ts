@@ -21,7 +21,7 @@ export interface AiSettings {
   apiKey: string;
   model: string;
   baseUrl: string; // for "custom" (OpenAI-compatible)
-  /** Fill missing aircraft by checking online (Gemini + Google Search). */
+  /** Fill missing aircraft & resolve unknown booking-class letters online (Gemini + Google Search). */
   searchOnline: boolean;
 }
 
@@ -40,14 +40,14 @@ export function defaultModelFor(provider: AiProvider): string {
   return "gemini-3.6-flash";
 }
 
-/** Suggested models for the picker (all 1M-token context on Gemini). */
+/** Suggested models for the picker (all 1M-token context on Gemini).
+ *  gemini-2.5-flash / gemini-2.5-pro are intentionally omitted: they 404 for
+ *  new API keys. */
 export const GEMINI_MODEL_SUGGESTIONS = [
   "gemini-3.6-flash",
   "gemini-3.7-flash",
   "gemini-3.8-flash",
   "gemini-3.5-flash",
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
 ];
 
 /** Gemini models that support the Google Search grounding tool. */
@@ -58,8 +58,6 @@ const GROUNDING_MODELS = new Set([
   "gemini-3.5-flash",
   "gemini-3.1-flash-lite",
   "gemini-3-flash",
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
   "gemini-2.0-flash",
 ]);
 
@@ -80,8 +78,15 @@ Rules:
   ONE object using the true origin and final destination.
 - Times are 24-hour "HH:MM" LOCAL. If only 12-hour is shown, convert it.
 - arrivalDayOffset: 0 same day, 1 next day (+1), 2 two days later.
-- cabin is one of FIRST, BUSINESS, PREMIUM, ECONOMY. bookingClass is the single
-  letter if the source states one (e.g. "Business (P)" -> "P"), else "".
+- cabin: ONLY set FIRST / BUSINESS / PREMIUM / ECONOMY when the source
+  explicitly prints a cabin NAME (e.g. "Business", "First Class", "Premium
+  Economy", "Economy", or "Business (P)"). If the source shows only a bare
+  booking-class LETTER without a cabin name (e.g. "W", "EY 22 W 14DEC"),
+  return cabin null and put that single letter in bookingClass — NEVER guess a
+  cabin from the letter (the converter resolves it against the airline's own
+  fare chart).
+- bookingClass is the single letter if the source states one (e.g. "Business
+  (P)" -> "P"), else "".
 - operatedBy: the operator name exactly as printed if the source says
   "Operated by X" (keep the whole name, e.g. "SKYWEST DBA UNITED EXPRESS"), else "".
 - Preserve source order; it is usually outbound flights first, then the return.
@@ -271,7 +276,7 @@ async function callGemini(text: string, s: AiSettings): Promise<string> {
       generationConfig: { responseMimeType: "application/json", temperature: 0 },
     }),
   });
-  if (!res.ok) throw new Error(`Gemini ${res.status}: ${await safeText(res)}`);
+  if (!res.ok) throw new Error(geminiError(res.status, await safeText(res)));
   const data = await res.json();
   const parts = data?.candidates?.[0]?.content?.parts;
   const out = Array.isArray(parts) ? parts.map((p: { text?: string }) => p.text || "").join("") : "";
@@ -312,6 +317,23 @@ async function safeText(res: Response): Promise<string> {
   }
 }
 
+/** Friendlier, actionable Gemini HTTP errors (404 model, quota/billing, key). */
+function geminiError(status: number, body: string): string {
+  if (status === 404) {
+    return "Gemini model not found (404) — that model isn't available for your API key. Pick a current model like gemini-3.x-flash in AI Assist.";
+  }
+  if (status === 429) {
+    return "Gemini quota or billing limit reached (429) — check your Google AI Studio billing, or try again in a moment.";
+  }
+  if (status === 403) {
+    return "Gemini rejected the request (403) — check that your API key is valid and has access to this model.";
+  }
+  if (status === 400) {
+    return `Gemini rejected the request (400): ${body}`;
+  }
+  return `Gemini ${status}: ${body}`;
+}
+
 function extractJson(raw: string): unknown {
   let s = raw.trim();
   // strip code fences
@@ -341,10 +363,10 @@ export async function extractFlightsWithAI(text: string, settings: AiSettings): 
 }
 
 /* ------------------------------------------------------------------ */
-/* Online aircraft lookup (equipment enrichment)                       */
+/* Online enrichment lookup (aircraft + booking-class → cabin)         */
 /* ------------------------------------------------------------------ */
 
-export interface AircraftLookupQuery {
+export interface OnlineLookupItem {
   airline: string;
   number: string;
   origin: string;
@@ -352,39 +374,77 @@ export interface AircraftLookupQuery {
   /** itinerary day/month — the year is the next occurrence of that date */
   day: number;
   month: number;
+  /** resolve the operating aircraft (when the source shows none) */
+  needAircraft?: boolean;
+  /** bare booking-class letter to resolve to a cabin */
+  bookingClass?: string;
 }
 
 export interface AircraftLookupResult {
   aircraft: string | null; // e.g. "Airbus A380"
   equip: string | null; // Sabre equipment code, e.g. "380"
   confidence: "high" | "medium" | "low";
-  /** true when a live web search (Gemini + Google Search) was used */
-  searched: boolean;
 }
 
-const LOOKUP_SYSTEM_PROMPT = `You are a GDS equipment resolver for Sabre bookings.
-For each numbered flight, determine the AIRCRAFT TYPE that operates it: the actual
-equipment for that airline + flight number + route (prefer what really flies on the
-stated day of the year when a dated schedule can be found). Use the web search results
-when they are available.
+export interface CabinLookupResult {
+  cabin: Cabin | null; // null when no reliable source exists
+  reasoning: string; // e.g. "EY fare chart: W = Business Saver"
+}
 
-For every flight return:
-- "aircraft": the exact type as published (e.g. "Airbus A380", "Boeing 787-10",
-  "Airbus A330-300", "Boeing 777-300ER") or null if truly unknown.
-- "sabreCode": the 3-letter Sabre GDS equipment code this AIRLINE files for that
-  type. Standard examples: A380=380, A350-900=359, A350-1000=351, A330-300=333,
-  A330-200=332, A320=320, A321=321, A321neo=32N, 787-8=788, 787-9=789,
-  787-10=78J, 777-300ER=77W, 777-300=773, 767-300=763, 737-800=738, 737-900=739,
-  737 MAX 8=7M8, 737 MAX 9=7M9, E175=175, E195=E95, CRJ900=900, Q400=DH4.
-  Airlines sometimes file differently — when the airline's own GDS practice can be
-  determined, use that (for example Emirates files the Boeing 787-10 as 781).
-  If you cannot be sure, use null.
-- "confidence": "high" only when a dated schedule or two+ sources confirm the type
-  for this specific route; "medium" for the airline's standard equipment on the
-  route; "low" for a best guess.
+export interface OnlineLookupOutcome {
+  aircraft: Map<string, AircraftLookupResult>;
+  cabins: Map<string, CabinLookupResult>;
+  /** true when the call used live Google Search grounding */
+  grounded: boolean;
+  /** true when a quota/billing 429 forced a retry WITHOUT grounding */
+  usedFallback: boolean;
+}
+
+const LOOKUP_SYSTEM_PROMPT = `You are a flight resolver for a Sabre GDS converter. You receive a numbered list of
+flights, each possibly missing one or both of:
+- the AIRCRAFT type / equipment that operates it, and/or
+- the CABIN for a bare booking-class letter (e.g. "W").
+
+Resolve ONLY what each flight asks for. Never invent data — when no reliable
+source exists, say so explicitly and return null.
+
+CABIN rules:
+- If the pasted text states an explicit cabin NAME (e.g. "Business", "First",
+  "Premium Economy", "Economy"), that name is authoritative — return it and do
+  NOT look anything up.
+- If only a bare booking-class LETTER is given, resolve it against THAT
+  AIRLINE'S OWN published fare chart, or a frequent-flyer partner's mileage
+  earning table for that airline. A letter's meaning is airline-specific
+  (e.g. Emirates "W" is Business; on many other carriers "W" is Economy).
+  If no reliable source exists for that airline + letter, return cabin null and
+  say "no reliable source found" in cabinReason. NEVER guess a cabin from
+  generic IATA convention.
+
+AIRCRAFT rules:
+- If the pasted text already contains an aircraft type or equipment code, it is
+  confirmed — return it and do NOT look anything up.
+- Otherwise check 2-3 live trackers — FlightAware, Flightera, AirNavRadar,
+  trip.com, flight.info — for the airline + flight number + route on the stated
+  date. If the trackers disagree on dates/types (a fleet swap), return the most
+  likely type but flag it "unverified best guess, confirm against PNR".
+
+"sabreCode" is the 3-letter Sabre GDS equipment code this AIRLINE files for the
+type. Standard examples: A380=380, A350-900=359, A350-1000=351, A330-300=333,
+A330-200=332, A320=320, A321=321, A321neo=32N, 787-8=788, 787-9=789, 787-10=78J,
+777-300ER=77W, 777-300=773, 767-300=763, 737-800=738, 737-900=739, 737 MAX 8=7M8,
+737 MAX 9=7M9, E175=175, E195=E95, CRJ900=900, Q400=DH4. Airlines sometimes file
+differently (e.g. Emirates files the Boeing 787-10 as 781); use the airline's own
+practice when determinable, otherwise null.
+
+"confidence" is "high" only when a dated schedule or two+ sources confirm the type
+for this specific route; "medium" for the airline's standard equipment on the
+route; "low" for a best guess.
 
 Output a single JSON object, no prose:
-{"results":[{"index":1,"aircraft":"Airbus A380","sabreCode":"380","confidence":"high"}]}`;
+{"results":[{"index":1,"aircraft":"Airbus A380","sabreCode":"380","confidence":"high",
+"cabin":"BUSINESS","cabinReason":"EY fare chart: W = Business Saver"}]}
+"aircraft"/"sabreCode"/"cabin"/"cabinReason" may be null or empty when not needed
+or unknown.`;
 
 const MONTH3 = ["", "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
@@ -394,49 +454,86 @@ function rawNum(num: string): string {
   return Number.isFinite(n) ? String(n) : num;
 }
 
+/** One Gemini generateContent call for the lookup prompt. */
+async function geminiLookupCall(
+  model: string,
+  apiKey: string,
+  systemPrompt: string,
+  userText: string,
+  withGrounding: boolean
+): Promise<string> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ role: "user", parts: [{ text: userText }] }],
+      tools: withGrounding ? [{ google_search: {} }] : undefined,
+      generationConfig: { temperature: 0 },
+    }),
+  });
+  if (!res.ok) {
+    const err = new Error(geminiError(res.status, await safeText(res))) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
+  const data = await res.json();
+  return Array.isArray(data?.candidates?.[0]?.content?.parts)
+    ? data.candidates[0].content.parts.map((p: { text?: string }) => p.text || "").join("")
+    : "";
+}
+
 /**
- * Ask the configured AI provider what aircraft operate the given flights.
+ * Ask the configured AI provider to resolve missing aircraft and/or
+ * booking-class → cabin for the given flights — all in ONE call.
  * With Gemini this runs WITH Google Search grounding (a real online check) on
- * any supported model; with OpenAI-compatible providers it falls back to the
- * model's own knowledge (searchOnline is ignored).
+ * any supported model; a quota/billing 429 automatically retries once WITHOUT
+ * grounding and reports which path was used. With OpenAI-compatible providers
+ * it falls back to the model's own knowledge.
  */
-export async function lookupAircraftOnline(
-  flights: AircraftLookupQuery[],
+export async function lookupFlightsOnline(
+  items: OnlineLookupItem[],
   settings: AiSettings
-): Promise<{ results: Map<string, AircraftLookupResult>; searched: boolean }> {
+): Promise<OnlineLookupOutcome> {
   if (!settings.apiKey) throw new Error("No API key configured.");
-  const results = new Map<string, AircraftLookupResult>();
-  if (flights.length === 0) return { results, searched: false };
+  const aircraft = new Map<string, AircraftLookupResult>();
+  const cabins = new Map<string, CabinLookupResult>();
+  if (items.length === 0) return { aircraft, cabins, grounded: false, usedFallback: false };
 
   const isGemini = settings.provider === "gemini";
   const model = settings.model || (isGemini ? "gemini-3.6-flash" : "gpt-4o-mini");
-  const searched = isGemini && GROUNDING_MODELS.has(model);
+  let grounded = isGemini && GROUNDING_MODELS.has(model);
+  let usedFallback = false;
 
-  const list = flights
-    .map(
-      (f, i) =>
-        `${i + 1}. ${f.airline} ${rawNum(f.number)}, ${f.origin} → ${f.dest}, ${f.day} ${MONTH3[f.month] ?? ""}`
-    )
+  const list = items
+    .map((f, i) => {
+      const wants =
+        f.needAircraft && f.bookingClass
+          ? `need aircraft; booking class ${f.bookingClass}`
+          : f.needAircraft
+            ? "need aircraft"
+            : `need cabin for booking class ${f.bookingClass}`;
+      return `${i + 1}. ${f.airline} ${rawNum(f.number)}, ${f.origin} → ${f.dest}, ${f.day} ${MONTH3[f.month] ?? ""} — ${wants}`;
+    })
     .join("\n");
 
   let content: string;
   if (isGemini) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(settings.apiKey)}`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: LOOKUP_SYSTEM_PROMPT }] },
-        contents: [{ role: "user", parts: [{ text: `Flights:\n${list}` }] }],
-        tools: searched ? [{ google_search: {} }] : undefined,
-        generationConfig: { temperature: 0 },
-      }),
-    });
-    if (!res.ok) throw new Error(`Gemini ${res.status}: ${await safeText(res)}`);
-    const data = await res.json();
-    content = Array.isArray(data?.candidates?.[0]?.content?.parts)
-      ? data.candidates[0].content.parts.map((p: { text?: string }) => p.text || "").join("")
-      : "";
+    try {
+      content = await geminiLookupCall(model, settings.apiKey, LOOKUP_SYSTEM_PROMPT, `Flights:\n${list}`, grounded);
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      if (status === 429 && grounded) {
+        // Quota/billing on the grounded call — retry once WITHOUT Google Search
+        // grounding (the model's own knowledge still resolves most flights).
+        usedFallback = true;
+        grounded = false;
+        content = await geminiLookupCall(model, settings.apiKey, LOOKUP_SYSTEM_PROMPT, `Flights:\n${list}`, false);
+      } else {
+        throw e;
+      }
+    }
   } else {
     const base = (settings.provider === "custom" && settings.baseUrl ? settings.baseUrl : "https://api.openai.com/v1").replace(/\/$/, "");
     const res = await fetch(`${base}/chat/completions`, {
@@ -460,30 +557,44 @@ export async function lookupAircraftOnline(
 
   const json = extractJson(content) as { results?: Array<{
     index?: number;
-    airline?: string;
-    flightNumber?: string | number;
     aircraft?: string | null;
     sabreCode?: string | null;
     equipmentCode?: string | null;
     confidence?: string;
+    cabin?: string | null;
+    cabinReason?: string | null;
   }> };
   for (const r of json.results ?? []) {
-    const query = flights[(Number(r.index) || 1) - 1] ?? null;
-    if (!query) continue;
-    const aircraft = r.aircraft ? String(r.aircraft).trim() : "";
-    const modelCode = String(r.sabreCode ?? r.equipmentCode ?? "").trim().toUpperCase();
-    // The aircraft name goes through the SAME mapper the local parser uses,
-    // so a phrase like "Boeing 787-10" is always converted identically; the
-    // model's own sabreCode wins when it is a plausible 2-3 char GDS code.
-    const mapped = aircraft ? parseExplicitAircraftString(aircraft, query.airline) : null;
-    const code = (/^[A-Z0-9]{2,3}$/.test(modelCode) ? modelCode : null) ?? mapped ?? null;
-    if (!aircraft && !code) continue;
-    results.set(`${query.airline}${rawNum(query.number)}`, {
-      aircraft: aircraft || null,
-      equip: code,
-      confidence: r.confidence === "high" || r.confidence === "medium" ? r.confidence : "low",
-      searched,
-    });
+    const item = items[(Number(r.index) || 1) - 1] ?? null;
+    if (!item) continue;
+    const key = `${item.airline}${rawNum(item.number)}`;
+
+    if (item.needAircraft) {
+      const acName = r.aircraft ? String(r.aircraft).trim() : "";
+      const modelCode = String(r.sabreCode ?? r.equipmentCode ?? "").trim().toUpperCase();
+      // The aircraft name goes through the SAME mapper the local parser uses,
+      // so a phrase like "Boeing 787-10" is always converted identically; the
+      // model's own sabreCode wins when it is a plausible 2-3 char GDS code.
+      const mapped = acName ? parseExplicitAircraftString(acName, item.airline) : null;
+      const code = (/^[A-Z0-9]{2,3}$/.test(modelCode) ? modelCode : null) ?? mapped ?? null;
+      if (acName || code) {
+        aircraft.set(key, {
+          aircraft: acName || null,
+          equip: code,
+          confidence: r.confidence === "high" || r.confidence === "medium" ? r.confidence : "low",
+        });
+      }
+    }
+
+    if (item.bookingClass) {
+      const cabin = normCabin(r.cabin ?? undefined) ?? null;
+      const reasoning = r.cabinReason && String(r.cabinReason).trim()
+        ? String(r.cabinReason).trim()
+        : cabin
+          ? "resolved online"
+          : "no reliable source found";
+      cabins.set(key, { cabin, reasoning });
+    }
   }
-  return { results, searched };
+  return { aircraft, cabins, grounded, usedFallback };
 }

@@ -8,9 +8,10 @@ import {
   defaultModelFor,
   extractFlightsWithAI,
   GEMINI_MODEL_SUGGESTIONS,
-  lookupAircraftOnline,
+  lookupFlightsOnline,
   type AiProvider,
   type AiSettings,
+  type OnlineLookupItem,
 } from "./lib/ai";
 import {
   clearLearned,
@@ -344,17 +345,19 @@ export default function App() {
     setEdited(result ? result.segments.map((s) => ({ ...s })) : null);
   }, [result]);
 
-  /* ---- online aircraft enrichment ----
+  /* ---- online enrichment ----
    * When AI Assist is on and the result still shows equipment "---" for a
-   * segment, ask the AI (Gemini + Google Search grounding) which aircraft
-   * operate those flights, then re-assemble the result with the found codes.
-   * One attempt per input; found aircraft are memorized when learning is on. */
+   * segment or a bare booking-class letter whose cabin couldn't be resolved,
+   * ask the AI (Gemini + Google Search grounding) for BOTH in a single call,
+   * then re-assemble the result with the found codes/cabins.
+   * One attempt per input; found values are memorized when learning is on. */
   const [enrichBusy, setEnrichBusy] = useState(false);
   const enrichedKeyRef = useRef<string>("");
   useEffect(() => {
     if (!result || !result.hasOutput) return;
-    const missing = result.segments.filter((s) => s.equip === "---");
-    if (missing.length === 0) return;
+    const missingAircraft = result.segments.filter((s) => s.equip === "---");
+    const unresolvedCabins = result.unresolvedCabins ?? [];
+    if (missingAircraft.length === 0 && unresolvedCabins.length === 0) return;
     if (!ai.enabled || !ai.apiKey || !ai.searchOnline) return;
     const key = `${text}::${fallbackCabin ?? "·"}::${ai.model}`;
     if (enrichedKeyRef.current === key) return; // already attempted for this input
@@ -362,57 +365,141 @@ export default function App() {
     setEnrichBusy(true);
     (async () => {
       try {
-        const { results, searched } = await lookupAircraftOnline(
-          missing.map((s) => ({
+        const items: OnlineLookupItem[] = [];
+        for (const s of missingAircraft) {
+          items.push({
             airline: s.airline,
             number: s.num,
             origin: s.origin,
             dest: s.dest,
             day: s.date.day,
             month: s.date.month,
-          })),
-          ai
-        );
+            needAircraft: true,
+          });
+        }
+        for (const u of unresolvedCabins) {
+          items.push({
+            airline: u.airline,
+            number: u.number,
+            origin: u.origin,
+            dest: u.dest,
+            day: u.date.day,
+            month: u.date.month,
+            needAircraft: u.equip === "---" ? true : undefined,
+            bookingClass: u.bookingClass,
+          });
+        }
+        const outcome = await lookupFlightsOnline(items, ai);
         if (cancelled) return;
+
+        const src = outcome.grounded
+          ? "checked online"
+          : outcome.usedFallback
+            ? "from model knowledge (quota fallback — ran without live search)"
+            : "from model knowledge";
+
+        // 1. patch built segments whose equipment is still "---"
+        const aircraftNotes: string[] = [];
         const found: Segment[] = [];
         const newSegs = result.segments.map((s) => {
           if (s.equip !== "---") return s;
-          const r = results.get(`${s.airline}${parseInt(s.num, 10)}`);
+          const r = outcome.aircraft.get(`${s.airline}${parseInt(s.num, 10)}`);
           if (r?.equip) {
             const next = { ...s, equip: r.equip, equipRaw: r.aircraft ?? s.equipRaw };
             found.push(next);
+            aircraftNotes.push(`${s.airline} ${s.num} = ${next.equipRaw ?? next.equip} (${next.equip})`);
             return next;
           }
           return s;
         });
-        if (found.length === 0) return; // nothing found — keep "---" and its warning
+
+        // 2. resolve bare booking-class letters: build the missing segments
+        //    in their original positions and remember the reasoning.
+        const cabinNotes: string[] = [];
+        const cabinSegs: Array<{ seg: Segment; insertAt: number }> = [];
+        const resolvedCabinLabels: string[] = [];
+        const stillUnresolved: string[] = [];
+        for (const u of unresolvedCabins) {
+          const label = `${u.airline} ${u.num} · ${u.origin} → ${u.dest}`;
+          const r = outcome.cabins.get(`${u.airline}${parseInt(u.number, 10)}`);
+          if (!r?.cabin) {
+            stillUnresolved.push(label);
+            continue;
+          }
+          const ac = u.equip === "---" ? outcome.aircraft.get(`${u.airline}${parseInt(u.number, 10)}`) : undefined;
+          const seg: Segment = {
+            airline: u.airline,
+            num: u.num,
+            date: u.date,
+            origin: u.origin,
+            dest: u.dest,
+            dep: u.dep,
+            arr: u.arr,
+            arrDay: u.arrDay,
+            equip: ac?.equip ?? u.equip,
+            equipRaw: ac?.aircraft ?? u.equipRaw,
+            elapsed: u.elapsed,
+            cabin: r.cabin,
+            bookingClass: u.bookingClass,
+            operatedBy: u.operatedBy,
+            direction: u.direction,
+            // the booking-class letter itself came from the source — only the
+            // cabin it maps to was resolved online
+            classFromSource: true,
+          };
+          cabinSegs.push({ seg, insertAt: u.insertAt });
+          cabinNotes.push(`${u.airline} ${u.num} ${u.bookingClass} → ${r.cabin}${r.reasoning ? ` (${r.reasoning})` : ""}`);
+          resolvedCabinLabels.push(label);
+          if (ac?.equip) {
+            found.push(seg);
+            aircraftNotes.push(`${u.airline} ${u.num} = ${seg.equipRaw ?? seg.equip} (${seg.equip})`);
+          }
+        }
+
+        if (found.length === 0 && cabinSegs.length === 0) return; // nothing found
+
+        const insertions = cabinSegs.slice().sort((a, b) => a.insertAt - b.insertAt);
+        let inserted = 0;
+        for (const c of insertions) {
+          newSegs.splice(c.insertAt + inserted, 0, c.seg);
+          inserted += 1;
+        }
+
         const foundKeys = new Set(found.map((s) => `${s.airline} ${s.num}`));
         const keptIssues = result.issues.filter(
-          (i) => !(i.text.includes("aircraft not found") && [...foundKeys].some((k) => i.text.includes(k)))
+          (i) =>
+            !(i.text.includes("aircraft not found") && [...foundKeys].some((k) => i.text.includes(k))) &&
+            !(i.level === "error" && (i.text.includes("cabin not stated in the source") || i.text.includes("have no stated cabin")))
         );
-        const summary = found
-          .map((s) => `${s.airline} ${s.num} = ${s.equipRaw ?? s.equip} (${s.equip})`)
-          .join(" · ");
-        const src = searched ? "checked online" : "from model knowledge";
-        const next = assembleFromSegments(
-          newSegs,
-          [
-            {
-              level: "info",
-              text: `🌐 Aircraft ${src}: ${summary}.`,
-            },
-            ...keptIssues,
-          ],
-          result.missingCabinFlights
-        );
+        const nextIssues: Issue[] = [];
+        if (aircraftNotes.length > 0) {
+          nextIssues.push({ level: "info", text: `🌐 Aircraft ${src}: ${aircraftNotes.join(" · ")}.` });
+        }
+        if (cabinNotes.length > 0) {
+          nextIssues.push({ level: "info", text: `🌐 Cabin resolved online: ${cabinNotes.join(" · ")}.` });
+        }
+        nextIssues.push(...keptIssues);
+        if (stillUnresolved.length > 0) {
+          nextIssues.push({
+            level: "error",
+            text:
+              stillUnresolved.length === 1
+                ? `${stillUnresolved[0]}: cabin not stated in the source — choose a cabin below so the booking class can be assigned.`
+                : `${stillUnresolved.length} flights have no stated cabin — choose a cabin below to assign their booking classes.`,
+          });
+        }
+
+        const nextMissing = result.missingCabinFlights.filter((m) => !resolvedCabinLabels.includes(m));
+        const next = assembleFromSegments(newSegs, nextIssues, nextMissing);
         enrichedKeyRef.current = key;
         setResult(next);
         if (learningOn) {
           found.forEach((s) => learnFlight(s));
+          cabinSegs.forEach((c) => learnFlight(c.seg));
           setLearnedVersion((v) => v + 1);
         }
       } catch (e) {
-        if (!cancelled) setAiNote(`Aircraft lookup failed: ${e instanceof Error ? e.message : String(e)}`);
+        if (!cancelled) setAiNote(`Online lookup failed: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
         if (!cancelled) setEnrichBusy(false);
       }
@@ -433,7 +520,7 @@ export default function App() {
     // re-validate the EDITED output; stale internal checks from the original
     // parse are replaced by fresh ones, parse-time notes are kept.
     const carriedIssues = result.issues.filter((i) => !i.text.startsWith("Internal:"));
-    return assembleFromSegments(edited, carriedIssues, result.missingCabinFlights);
+    return assembleFromSegments(edited, carriedIssues, result.missingCabinFlights, result.unresolvedCabins);
   }, [result, edited]);
 
   const editedCount = useMemo(() => {
@@ -717,9 +804,9 @@ export default function App() {
     return liveResult.issues.filter((i) => i.level !== "info");
   }, [liveResult]);
 
-  const infoIssue = useMemo(() => {
-    if (!liveResult) return null;
-    return liveResult.issues.find((i) => i.level === "info") ?? null;
+  const infoIssues = useMemo(() => {
+    if (!liveResult) return [];
+    return liveResult.issues.filter((i) => i.level === "info");
   }, [liveResult]);
 
   const outCount = liveResult?.segments.filter((s) => s.direction === "OUT").length ?? 0;
@@ -1071,9 +1158,9 @@ export default function App() {
               {ai.enabled && (
                 <div className="mt-3 flex items-center justify-between border-t border-honey/15 pt-3">
                   <span className="text-[11.5px] text-amber-200/80">
-                    🌐 Look up missing aircraft online
+                    🌐 Look up missing aircraft &amp; cabins online
                     <span className="ml-1.5 text-[10.5px] text-amber-200/50">
-                      (Gemini + Google Search — fills the “---” equipment, small per-search cost on your key)
+                      (Gemini + Google Search — fills “---” equipment and resolves unknown booking-class letters, small per-search cost on your key)
                     </span>
                   </span>
                   <button
@@ -1103,17 +1190,19 @@ export default function App() {
         {enrichBusy && (
           <div className="mt-5 flex items-center gap-2 rounded-xl border border-honey/25 bg-honey/[0.05] px-4 py-3 text-[12.5px] text-amber-100/90">
             <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-honey/30 border-t-honey" />
-            Looking up missing aircraft online…
+            Looking up missing aircraft &amp; cabins online…
           </div>
         )}
 
         {/* ============ issues ============ */}
-        {(showIssues.length > 0 || infoIssue) && (
+        {(showIssues.length > 0 || infoIssues.length > 0) && (
           <div className="mt-5 space-y-2">
             {showIssues.map((issue, idx) => (
               <IssueRow key={idx} issue={issue} />
             ))}
-            {infoIssue && <IssueRow issue={infoIssue} />}
+            {infoIssues.map((issue, idx) => (
+              <IssueRow key={`info-${idx}`} issue={issue} />
+            ))}
           </div>
         )}
 

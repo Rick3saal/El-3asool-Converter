@@ -3,7 +3,7 @@
  * Both TEXT and IMAGE (OCR) flows converge here — one conversion path,
  * one formatter, one validator.
  */
-import { Cabin, ConverterResult, Issue, RawFlight, Segment } from "./types";
+import { Cabin, ConverterResult, Issue, RawFlight, Segment, UnresolvedCabinFlight } from "./types";
 import { parseItineraryText, splitDirections } from "./parser";
 import {
   additionalLine,
@@ -65,6 +65,7 @@ export function convertFlights(
 ): ConverterResult {
   const issues: Issue[] = [...baseIssues];
   const missingCabinFlights: string[] = [];
+  const unresolvedCabins: UnresolvedCabinFlight[] = [];
   const segments: Segment[] = [];
   const excluded: string[] = [];
 
@@ -107,27 +108,53 @@ export function convertFlights(
         text: `${label}${route}: cabin ${cabinFromLetter} inferred from booking class ${f.bookingClass} (${f.airline}).`,
       });
     }
-    if (!cabin) {
-      missingCabinFlights.push(`${label} · ${f.origin} → ${f.dest}`);
-      continue;
-    }
-    const bookingClass = f.bookingClass && /^[A-Z]$/.test(f.bookingClass) ? f.bookingClass : DEFAULT_CLASS[cabin];
     /* The user's supplied flight data is the primary source of truth for aircraft.
      * Always use explicitly supplied aircraft information first, converting to Sabre code.
      * Only use external / learned lookup when the user's input does not provide aircraft.
-     * Never replace explicitly supplied aircraft with "---". */
+     * Never replace explicitly supplied aircraft with "---".
+     * Resolved up front because it is needed both for the built segment and for
+     * the unresolved-cabin detail the online pass later completes. */
     const directEquip = (f.equip && f.equip !== "---")
       ? f.equip
       : (f.equipRaw ? parseExplicitAircraftString(f.equipRaw, f.airline) : null);
     const learnedEquip = !directEquip ? lookupLearnedAircraft(f.equipRaw) : undefined;
     const equip = directEquip || learnedEquip || "---";
+    const elapsed = resolveElapsed(f.origin!, f.dest!, f.dep!, f.arr!, f.elapsed);
+    if (!cabin) {
+      // A bare booking-class letter with no known airline map and no fallback:
+      // keep the full detail so the online pass can resolve the letter and
+      // build the segment (in its original position) without re-parsing.
+      if (f.bookingClass && /^[A-Z]$/.test(f.bookingClass)) {
+        unresolvedCabins.push({
+          airline: f.airline,
+          number: f.number,
+          num: displayFlightNumber(f.number, f.airline),
+          origin: f.origin!,
+          dest: f.dest!,
+          date: { day: f.date!.day, month: f.date!.month },
+          dep: f.dep!,
+          arr: f.arr!,
+          arrDay: f.arrDay,
+          equip,
+          equipRaw: f.equipRaw,
+          elapsed: elapsed.minutes,
+          operatedBy: f.operatedBy,
+          direction: f.direction ?? "OUT",
+          bookingClass: f.bookingClass,
+          insertAt: segments.length,
+        });
+      }
+      missingCabinFlights.push(`${label} · ${f.origin} → ${f.dest}`);
+      continue;
+    }
+    const classFromSource = !!f.bookingClass && /^[A-Z]$/.test(f.bookingClass);
+    const bookingClass = classFromSource ? f.bookingClass! : DEFAULT_CLASS[cabin];
     if (!directEquip && !learnedEquip) {
       issues.push({
         level: "warn",
         text: `${label}${route}: aircraft not found in the source — equipment shown as ---. Add the aircraft type to the itinerary if you want it filled automatically.`,
       });
     }
-    const elapsed = resolveElapsed(f.origin!, f.dest!, f.dep!, f.arr!, f.elapsed);
     if (!elapsed.confident && !f.elapsedExplicit) {
       issues.push({
         level: "warn",
@@ -154,6 +181,7 @@ export function convertFlights(
       bookingClass,
       operatedBy,
       direction: f.direction ?? "OUT",
+      classFromSource,
     });
   }
 
@@ -177,7 +205,7 @@ export function convertFlights(
     });
   }
 
-  return assembleFromSegments(learnedSegments, issues, missingCabinFlights);
+  return assembleFromSegments(learnedSegments, issues, missingCabinFlights, unresolvedCabins);
 }
 
 /**
@@ -188,7 +216,8 @@ export function convertFlights(
 export function assembleFromSegments(
   segments: Segment[],
   issues: Issue[] = [],
-  missingCabinFlights: string[] = []
+  missingCabinFlights: string[] = [],
+  unresolvedCabins: UnresolvedCabinFlight[] = []
 ): ConverterResult {
   const outSegs = segments.filter((s) => s.direction === "OUT");
   const inSegs = segments.filter((s) => s.direction === "IN");
@@ -232,6 +261,7 @@ export function assembleFromSegments(
     issues,
     hasOutput: segments.length > 0,
     missingCabinFlights,
+    unresolvedCabins,
   };
 }
 
