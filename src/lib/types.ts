@@ -65,6 +65,35 @@ export interface Segment {
   bookingClass: string;
   operatedBy?: string;
   direction: Direction;
+  /** true when the booking-class letter was stated in the source (vs. defaulted from the cabin) */
+  classFromSource?: boolean;
+}
+
+/** A flight that could not be built because its cabin is unresolved: it carries
+ *  a bare booking-class letter that no airline table maps and no fallback cabin
+ *  was chosen. It is kept in full detail so the online enrichment pass (or the
+ *  user) can resolve the letter and build the segment without re-parsing. */
+export interface UnresolvedCabinFlight {
+  airline: string;
+  /** raw flight number digits as found, e.g. "22" */
+  number: string;
+  /** flight number as displayed (2-digit numbers padded to 3) */
+  num: string;
+  origin: string;
+  dest: string;
+  date: ParsedDate;
+  dep: number;
+  arr: number;
+  arrDay: 0 | 1 | 2;
+  equip: string;
+  equipRaw?: string;
+  elapsed: number;
+  operatedBy?: string;
+  direction: Direction;
+  /** bare booking-class letter from the source, e.g. "W" */
+  bookingClass: string;
+  /** index into the built segments array where this flight belongs */
+  insertAt: number;
 }
 
 export type IssueLevel = "error" | "warn" | "info";
@@ -83,4 +112,5 @@ export interface ConverterResult {
   issues: Issue[];
   hasOutput: boolean;
   missingCabinFlights: string[]; // flights needing a cabin choice
+  unresolvedCabins: UnresolvedCabinFlight[]; // bare-class flights awaiting resolution
 }
