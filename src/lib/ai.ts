@@ -337,7 +337,8 @@ async function callGemini(text: string, s: AiSettings): Promise<string> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20000);
     try {
-      // 1. Try with search grounding tool for live web flight data
+      // 1. Standard structured JSON mode (supported by all free and paid tier keys,
+      // zero search billing requirement, uses standard daily token quota).
       let res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -345,12 +346,11 @@ async function callGemini(text: string, s: AiSettings): Promise<string> {
         body: JSON.stringify({
           system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
           contents: [{ role: "user", parts: [{ text }] }],
-          tools: [{ googleSearch: {} }],
-          generationConfig: { temperature: 0 },
+          generationConfig: { responseMimeType: "application/json", temperature: 0 },
         }),
       });
 
-      // 2. If tools are unsupported on key or tier (400), try standard json mode
+      // 2. If the endpoint rejects responseMimeType (400), try standard prompt call
       if (!res.ok && res.status === 400) {
         res = await fetch(url, {
           method: "POST",
@@ -359,7 +359,7 @@ async function callGemini(text: string, s: AiSettings): Promise<string> {
           body: JSON.stringify({
             system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
             contents: [{ role: "user", parts: [{ text }] }],
-            generationConfig: { responseMimeType: "application/json", temperature: 0 },
+            generationConfig: { temperature: 0 },
           }),
         });
       }
@@ -372,8 +372,8 @@ async function callGemini(text: string, s: AiSettings): Promise<string> {
       } else {
         const errBody = await safeText(res);
         lastError = new Error(`Gemini ${res.status} (${model}): ${errBody}`);
-        // If 404 (model not found/retired) or 429 (rate limit exceeded on this model),
-        // try the next active model in the fallback list before giving up.
+        // If 404 (model not found/retired) or 429 (rate limit on this model),
+        // try the next model in the fallback list before giving up.
         if (res.status === 404 || res.status === 429) {
           continue;
         }
