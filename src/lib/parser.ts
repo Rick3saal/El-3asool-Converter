@@ -8,7 +8,7 @@
 import { RawFlight, ParsedDate, Cabin, Issue } from "./types";
 import { airlineFromName, isAirlineCode, AIRLINE_NAMES } from "./airlines";
 import { findAircraftTokens, parseExplicitAircraftString } from "./aircraft";
-import { cityToCode, sameCity } from "./airports";
+import { cityToCode, sameCity, tzOffsetMinutesOnDate } from "./airports";
 import { lookupFlightKnowledge } from "./learning";
 
 const MONTHS: Record<string, number> = {
@@ -546,9 +546,14 @@ interface FastSeg {
   dep: number;
   arr: number;
   arrDay: 0 | 1 | 2;
-  equip: string;
-  elapsed: number;
-  cabin: Cabin;
+  equip?: string;
+  elapsed?: number;
+  cabin?: Cabin;
+  /** Style A booking-class letter carried on the line itself */
+  cls?: string;
+  /** Style A "AS*748" marketing flag — real operator must be resolved */
+  starred?: boolean;
+  elapsedExplicit?: boolean;
 }
 
 function parseSabreTime(digits: string, suffix: string): number {
@@ -611,6 +616,98 @@ function parseSabreBlock(text: string): {
     }
   }
   if (!anyMain || segs.length === 0) return null;
+  return { segs, classes, opby };
+}
+
+/**
+ * Style A input: numbered Sabre-availability-style lines.
+ *
+ *    1 AS*748 I 1OCT LAX SEA 603A 852A 738 2.49 0 N ?
+ *    2 AS*119 I 1OCT SEA ICN 135P 530P¥1
+ *
+ * Compared with parseSabreBlock (which converts OUR OWN full output lines),
+ * Style A lines:
+ *  - carry a bare booking-class letter after the flight number
+ *  - may flag the marketing carrier with a star (AS*748 = "look up the real
+ *    operator" — resolved later from the known-flight table)
+ *  - keep ¥1/¥2 arrival-day offsets
+ *  - may omit equipment, elapsed time and the whole CABIN- tail entirely
+ *  - may end in service junk (0, N, ?) that must be ignored
+ * City-to-city heading lines never match — they group only, never create
+ * segments.
+ */
+function parseStyleABlock(text: string): {
+  segs: FastSeg[];
+  classes: Map<number, string>;
+  opby: Map<number, string>;
+} | null {
+  const lines = text.split("\n");
+  const segs: FastSeg[] = [];
+  const classes = new Map<number, string>();
+  const opby = new Map<number, string>();
+  let lastSeg = 0;
+  const lineRe = new RegExp(
+    `^\\s*(\\d+)\\s+([A-Z]{2})(\\*)?\\s*(\\d{1,4})\\s*([A-Z])?\\s*` +
+      `(\\d{1,2})(${MON3})\\s+([A-Z]{3})\\s*([A-Z]{3})\\s+` +
+      `(\\d{1,4})([AP])\\s+(\\d{1,4})([AP])(?:¥([12]))?\\s*(.*)$`,
+    "i"
+  );
+  const addRe = new RegExp(
+    `^\\s*(\\d+)\\s+([A-Z]{2})\\s+(\\d{1,4})([A-Z])\\s+(\\d{1,2})(${MON3})\\s*$`,
+    "i"
+  );
+  const opbyLineRe = /^\s*\*?\s*([A-Z]{3})-([A-Z]{3})\s+OPERATED\s+BY\s+(.+?)\s*$/i;
+  for (const line of lines) {
+    const m = lineRe.exec(line);
+    if (m) {
+      const seg: FastSeg = {
+        airline: m[2].toUpperCase(),
+        numberRaw: parseInt(m[4], 10),
+        day: parseInt(m[6], 10),
+        month: MONTHS[m[7].toLowerCase()],
+        origin: m[8].toUpperCase(),
+        dest: m[9].toUpperCase(),
+        dep: parseSabreTime(m[10], m[11].toUpperCase()),
+        arr: parseSabreTime(m[12], m[13].toUpperCase()),
+        arrDay: m[14] ? (parseInt(m[14], 10) as 0 | 1 | 2) : 0,
+        starred: !!m[3],
+        cls: m[5] ? m[5].toUpperCase() : undefined,
+      };
+      // trailing tokens after arrival time: elapsed h.mm, equipment code,
+      // service junk (0, N, ?) — take what is real, skip the rest
+      const tail = (m[15] ?? "").trim();
+      if (tail) {
+        for (const tok of tail.split(/\s+/)) {
+          if (/^\d{1,2}\.\d{2}$/.test(tok) && seg.elapsed === undefined) {
+            const [hh, mm2] = tok.split(".");
+            seg.elapsed = parseInt(hh, 10) * 60 + parseInt(mm2, 10);
+            seg.elapsedExplicit = true;
+            continue;
+          }
+          // equipment: 2-3 alnum with at least one digit (738, 789, E75, 32N)
+          if (!seg.equip && /^[A-Z0-9]{2,3}$/i.test(tok) && /\d/.test(tok) && !/^\d{2}$/.test(tok)) {
+            seg.equip = tok.toUpperCase();
+            continue;
+          }
+        }
+      }
+      segs.push(seg);
+      lastSeg = segs.length;
+      if (seg.cls) classes.set(segs.length, seg.cls);
+      continue;
+    }
+    const am = addRe.exec(line);
+    if (am) {
+      classes.set(parseInt(am[1], 10), am[4].toUpperCase());
+      continue;
+    }
+    const ob = opbyLineRe.exec(line);
+    if (ob && lastSeg > 0) {
+      const op = cleanOperator(ob[3]);
+      if (op) opby.set(lastSeg, op);
+    }
+  }
+  if (segs.length === 0) return null;
   return { segs, classes, opby };
 }
 
@@ -965,7 +1062,17 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
       w.arrDay = off;
       w.arrDayExplicit = true;
     } else if (!w.arrDayFromDate && w.dep !== undefined && w.arr !== undefined && w.arr < w.dep) {
-      w.arrDay = 1;
+      /* A local-clock wrap alone does NOT imply a next-day arrival: flying
+       * east across the date line (ICN 7:35P -> SEA 1:40P) lands the SAME
+       * day. Compare in UTC — using the flight's real date so DST is right —
+       * and only then decide. Unknown timezones keep the legacy wrap rule. */
+      const tzo = w.origin ? tzOffsetMinutesOnDate(w.origin, w.date?.month, w.date?.day, w.date?.year) : null;
+      const tzd = w.dest ? tzOffsetMinutesOnDate(w.dest, w.date?.month, w.date?.day, w.date?.year) : null;
+      if (tzo !== null && tzo !== undefined && tzd !== null && tzd !== undefined) {
+        w.arrDay = w.arr - tzd <= w.dep - tzo ? 1 : 0;
+      } else {
+        w.arrDay = 1;
+      }
     }
 
     /* ---- cabin ----
@@ -1330,6 +1437,42 @@ export function parseItineraryText(rawText: string): ParseResult {
         equip: s.equip,
         elapsed: s.elapsed,
         elapsedExplicit: true,
+        operatedBy: opby || undefined,
+        order: idx,
+      };
+    });
+    const { out, inn } = splitDirections(raw);
+    const flights = [...out, ...inn];
+    flights.forEach((f, idx) => {
+      f.order = idx;
+      f.direction = idx < out.length ? "OUT" : "IN";
+    });
+    return { flights, issues, fastPath: true };
+  }
+
+  /* Style A fast path: numbered availability-style lines (AS*748 I 1OCT ...).
+   * Runs after parseSabreBlock so our own full output lines (with CABIN-)
+   * always keep their printed cabin. */
+  const styleA = parseStyleABlock(text);
+  if (styleA) {
+    const raw: RawFlight[] = styleA.segs.map((s, idx) => {
+      const cls = s.cls ?? styleA.classes.get(idx + 1);
+      const opby = styleA.opby.get(idx + 1);
+      return {
+        airline: s.airline,
+        number: String(s.numberRaw),
+        starred: s.starred,
+        origin: s.origin,
+        dest: s.dest,
+        date: { day: s.day, month: s.month },
+        dep: s.dep,
+        arr: s.arr,
+        arrDay: s.arrDay,
+        cabin: s.cabin, // absent on Style A lines — the class table decides
+        bookingClass: cls && /^[A-Z]$/.test(cls) ? cls : undefined,
+        equip: s.equip,
+        elapsed: s.elapsed,
+        elapsedExplicit: s.elapsedExplicit === true,
         operatedBy: opby || undefined,
         order: idx,
       };

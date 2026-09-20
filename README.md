@@ -55,7 +55,7 @@ npm run deploy:vercel   # = vercel build --prod && vercel deploy --prebuilt --pr
 
 ```bash
 npm ci
-npm run check   # typecheck + 209 parser assertions + production build
+npm run check   # typecheck + 239 parser assertions + production build
 ```
 
 ---
@@ -69,7 +69,7 @@ npm run build      # production build into dist/
 npm run preview    # serve the built dist/ locally
 ```
 
-Scripts: `dev`, `build`, `preview`, `typecheck`, `selftest` (53 parser cases),
+Scripts: `dev`, `build`, `preview`, `typecheck`, `selftest` (83 parser cases, incl. Style A),
 `selftest:extra` (156 regression cases), `cathaycheck` (end-to-end CX itinerary),
 `check` (all of the above plus a production build) and `deploy:vercel`.
 
@@ -84,8 +84,10 @@ never take the deployment down.
 ```
 index.html            entry HTML (meta tags, fonts)
 src/App.tsx           the whole UI
-src/lib/parser.ts     deterministic itinerary parser
+src/lib/parser.ts     deterministic itinerary parser (Style A lines + Style B text blocks)
 src/lib/converter.ts  Sabre sell-entry / itinerary formatting
+src/lib/classTable.ts airline-specific booking-class -> cabin table
+src/lib/knownFlights.ts built-in flight knowledge (equipment + real operator)
 src/lib/ai.ts         optional browser-side AI assist (Gemini / OpenAI / custom)
 src/lib/ocr.ts        Tesseract.js OCR for screenshots
 src/lib/learning.ts   self-learning rules kept in localStorage

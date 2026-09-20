@@ -19,9 +19,14 @@ import {
   applyLearned,
   findLearnedItinerary,
   isLearningEnabled,
+  lookupFlightKnowledge,
   lookupLearnedAircraft,
 } from "./learning";
 import { parseExplicitAircraftString } from "./aircraft";
+import { lookupKnownFlight } from "./knownFlights";
+import { cabinFromClass } from "./classTable";
+import { airlineCompareCodeFromName } from "./airlines";
+import { elapsedStr } from "./sabre";
 
 const DEFAULT_CLASS: Record<Cabin, string> = {
   FIRST: "I",
@@ -96,38 +101,72 @@ export function convertFlights(
       });
       continue;
     }
-    const cabin = f.cabin ?? fallbackCabin;
-    if (!cabin) {
-      missingCabinFlights.push(`${label} · ${f.origin} → ${f.dest}`);
-      continue;
-    }
-    const bookingClass = f.bookingClass && /^[A-Z]$/.test(f.bookingClass) ? f.bookingClass : DEFAULT_CLASS[cabin];
     /* The user's supplied flight data is the primary source of truth for aircraft.
      * Always use explicitly supplied aircraft information first, converting to Sabre code.
      * Only use external / learned lookup when the user's input does not provide aircraft.
      * Never replace explicitly supplied aircraft with "---". */
+    const knownFlight = lookupKnownFlight(f.airline, f.number, f.origin, f.dest);
+    const learnedKnowledge = lookupFlightKnowledge(f.airline, f.number);
     const directEquip = (f.equip && f.equip !== "---")
       ? f.equip
       : (f.equipRaw ? parseExplicitAircraftString(f.equipRaw, f.airline) : null);
     const learnedEquip = !directEquip ? lookupLearnedAircraft(f.equipRaw) : undefined;
-    const equip = directEquip || learnedEquip || "---";
-    if (!directEquip && !learnedEquip) {
+    const knownEquip = !directEquip && !learnedEquip ? knownFlight?.equip ?? learnedKnowledge?.equip : undefined;
+    const equip = directEquip || learnedEquip || knownEquip || "---";
+    if (!directEquip && !learnedEquip && !knownEquip) {
       issues.push({
         level: "warn",
         text: `${label}${route}: aircraft not found in the source — equipment shown as ---. Add the aircraft type to the itinerary if you want it filled automatically.`,
       });
     }
-    const elapsed = resolveElapsed(f.origin!, f.dest!, f.dep!, f.arr!, f.elapsed);
+
+    /* Cabin resolution. A cabin printed in the source (Style B) is
+     * authoritative and skips the class table entirely. When only a class
+     * letter is given (Style A), the airline-specific table decides the cabin;
+     * a learned carrier+number knowledge row comes next; a user-picked
+     * fallback cabin is the last resort. The booking class LETTER itself is
+     * never rewritten — DEFAULT_CLASS only applies when the source gave a
+     * cabin with no letter at all. */
+    const srcLetter = f.bookingClass && /^[A-Z]$/.test(f.bookingClass) ? f.bookingClass : undefined;
+    let cabin = f.cabin;
+    if (!cabin && srcLetter) {
+      cabin = cabinFromClass(f.airline, srcLetter, equip !== "---" ? equip : undefined) ?? learnedKnowledge?.cabin ?? undefined;
+    }
+    if (!cabin) cabin = learnedKnowledge?.cabin ?? undefined;
+    if (!cabin) cabin = fallbackCabin ?? undefined;
+    if (!cabin) {
+      missingCabinFlights.push(`${label} · ${f.origin} → ${f.dest}`);
+      continue;
+    }
+    const bookingClass = srcLetter ?? learnedKnowledge?.bookingClass ?? DEFAULT_CLASS[cabin];
+
+    const elapsed = resolveElapsed(f.origin!, f.dest!, f.dep!, f.arr!, f.date, f.elapsed);
+    if (elapsed.overrode && f.elapsedExplicit) {
+      issues.push({
+        level: "warn",
+        text: `${label}${route}: duration in the source reads ${elapsedStr(f.elapsed!)} but timezones+date give ${elapsedStr(elapsed.minutes)} — using the calculated value.`,
+      });
+    }
     if (!elapsed.confident && !f.elapsedExplicit) {
       issues.push({
         level: "warn",
         text: `${label}${route}: duration not stated in the source — elapsed time estimated from clock times.`,
       });
     }
-    // Per the source-of-truth rules, whenever the itinerary explicitly states
-    // "Operated by X" we emit the operated-by line for that segment — even when
-    // X is the marketing carrier itself (e.g. LX 23 "Operated by Swiss").
-    const operatedBy = f.operatedBy;
+    /* Operated-by: the source's named operator wins; otherwise the built-in
+     * known-flight table (e.g. AS 2010 SEA-YVR → Horizon Air) supplies it —
+     * this also resolves Style A's "AS*2010" marketing flag. The line prints
+     * ONLY when the operator (compared by IATA code via the name map,
+     * aliases included) differs from the marketing carrier. "Operated by
+     * Swiss" on LX 23 prints nothing; "Horizon Air" on AS metal prints.
+     * Unknown operator names always print so no information is lost. */
+    const candidateOp = f.operatedBy ?? knownFlight?.operatedBy ?? learnedKnowledge?.operatedBy;
+    let operatedBy: string | undefined;
+    if (candidateOp) {
+      const opCode = airlineCompareCodeFromName(candidateOp);
+      if (opCode !== f.airline) operatedBy = candidateOp;
+      // when codes match the marketing carrier, print nothing (by design)
+    }
     segments.push({
       airline: f.airline,
       num: displayFlightNumber(f.number, f.airline),

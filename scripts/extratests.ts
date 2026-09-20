@@ -28,10 +28,10 @@ Economy (K)
 Price includes taxes`);
   check("noise text parses 2 segments", r.segments.length === 2, JSON.stringify(r.segments.map(s => `${s.airline}${s.num} ${s.origin}-${s.dest}`)));
   const ms988 = r.segments.find(s => s.num === "988");
-  check("MS 988 JFK->CAI 4NOV 1040P->1120A¥1 789", !!ms988 && r.itinerary.includes("1 MS 988 4NOV JFK CAI 1040P 1120A¥1 789"), r.itinerary);
-  check("MS 987 30DEC CAI->JFK 333", r.itinerary.includes("2 MS 987 30DEC CAI JFK 200P 730P 333"), r.itinerary);
+  check("MS 988 JFK->CAI 04NOV 1040P->1120A¥1 789", !!ms988 && r.itinerary.includes("1 MS  988 04NOV JFK CAI 1040P 1120A¥1 789"), r.itinerary);
+  check("MS 987 30DEC CAI->JFK 333", r.itinerary.includes("2 MS  987 30DEC CAI JFK 200P 730P 333"), r.itinerary);
   check("no phantom from Boeing/Airbus", !/BO |A3 /.test(r.itinerary));
-  check("outbound only MS988", r.outbound.includes("0MS988J4NOVJFKCAINN1") && !r.outbound.includes("987"), r.outbound);
+  check("outbound only MS988", r.outbound.includes("0MS988J04NOVJFKCAINN1") && !r.outbound.includes("987"), r.outbound);
 }
 
 // 2. single-line row style (Kayak/Google compact)
@@ -39,7 +39,7 @@ Price includes taxes`);
   const r = convert(`Wed, Nov 4
 10:40 AM British Airways 85 London (LHR) → Newark (EWR) 1:50 PM
 Boeing 777 · Business (I) · 8 hr 10 min`);
-  check("single-line row", r.segments.length === 1 && r.itinerary.includes("1 BA 085 4NOV LHR EWR 1040A 150P 777 8.10"), r.itinerary);
+  check("single-line row", r.segments.length === 1 && r.itinerary.includes("1 BA  085 04NOV LHR EWR 1040A 150P 777 8.10"), r.itinerary);
 }
 
 // 3. spec 12 noise only — zero flights
@@ -87,7 +87,7 @@ Wed, Dec 30
 Departure 9:00 AM · Arrival 12:30 PM
 Business`);
   check("same flight number round trip = 2 segments", r.segments.length === 2, `got ${r.segments.length}`);
-  check("seg1 JFK->CAI 4NOV, seg2 CAI->JFK 30DEC", r.itinerary.includes("1 MS 988 4NOV JFK CAI") && r.itinerary.includes("2 MS 988 30DEC CAI JFK"), r.itinerary);
+  check("seg1 JFK->CAI 04NOV, seg2 CAI->JFK 30DEC", r.itinerary.includes("1 MS  988 04NOV JFK CAI") && r.itinerary.includes("2 MS  988 30DEC CAI JFK"), r.itinerary);
   check("directions out/in split", r.outbound.includes("JFKCAINN1") && r.inbound.includes("CAIJFKNN1"), r.outbound + "|" + r.inbound);
 }
 
@@ -131,10 +131,12 @@ Duration: 12 hr 50 min`;
   check("exactly 4 segments", r.segments.length === 4, `got ${r.segments.length}: ` + r.segments.map(s => s.airline + s.num).join(","));
   check("all four flight numbers present", ["5810", "929", "958", "4577"].every(n => r.segments.some(s => s.num === n)), r.segments.map(s => s.num).join(","));
   check("layover duration never used as flight elapsed", !r.itinerary.includes("3.23") && !r.itinerary.includes("3.38"), r.itinerary);
-  check("UA5810 keeps own date/time/elapsed", r.itinerary.includes("1 UA 5810 8JAN EWR ORD 815P 945P --- 1.30 0 N  CABIN-ECONOMY"), r.itinerary);
-  check("UA929 keeps own ¥1 + 763 + 8.05", r.itinerary.includes("2 UA 929 8JAN ORD FRA 1115P 120P¥1 763 8.05 0 N  CABIN-BUSINESS"), r.itinerary);
-  check("UA958 keeps own 5.50 + own date", r.itinerary.includes("3 UA 958 9JAN FRA DXB 405P 1155P --- 5.50 0 N  CABIN-ECONOMY"), r.itinerary);
-  check("UA4577 keeps own 12.50 + own date", r.itinerary.includes("4 UA 4577 10JAN DXB EWR 210A 800A --- 12.50 0 N  CABIN-ECONOMY"), r.itinerary);
+  /* durations are DST-aware UTC math, which always wins over the stated
+   * value (a warn note is emitted when they differ) */
+  check("UA5810 keeps own date/time + calculated 2.30", r.itinerary.includes("1 UA 5810 08JAN EWR ORD 815P 945P --- 2.30 0 N  CABIN-ECONOMY"), r.itinerary);
+  check("UA929 keeps own ¥1 + 763 + calculated 7.05", r.itinerary.includes("2 UA  929 08JAN ORD FRA 1115P 120P¥1 763 7.05 0 N  CABIN-BUSINESS"), r.itinerary);
+  check("UA958 keeps own calculated 4.50 + own date", r.itinerary.includes("3 UA  958 09JAN FRA DXB 405P 1155P --- 4.50 0 N  CABIN-ECONOMY"), r.itinerary);
+  check("UA4577 keeps own calculated 14.50 + own date", r.itinerary.includes("4 UA 4577 10JAN DXB EWR 210A 800A --- 14.50 0 N  CABIN-ECONOMY"), r.itinerary);
   check("marketing carrier UA kept, operated-by attached", r.segments[2]?.airline === "UA" && r.segments[2]?.num === "958" && r.segments[2]?.operatedBy === "LUFTHANSA", JSON.stringify(r.segments[2]?.operatedBy));
   check("opby line only under segment 3 in main itinerary", r.itinerary.includes("*FRA-DXB OPERATED BY LUFTHANSA") && r.itinerary.indexOf("OPERATED") === r.itinerary.lastIndexOf("OPERATED"), r.itinerary);
   check("direction split 3 out / 1 in", r.segments.filter(s => s.direction === "OUT").length === 3 && r.segments.filter(s => s.direction === "IN").length === 1);
@@ -153,12 +155,12 @@ Fri, Jan 10 UA 4577 DXB JFK 210A 830A`;
   const r = convertToSabre(input, "ECONOMY");
   check("exactly 4 segments", r.segments.length === 4, `got ${r.segments.length}`);
   check("no flight vanished after layover row", r.segments.map(s => s.num).join(",") === "5810,929,958,4577", r.segments.map(s => s.num).join(","));
-  check("seg1 JFK ORD 254P 410P", r.itinerary.includes("1 UA 5810 8JAN JFK ORD 254P 410P"), r.itinerary);
-  check("seg2 ORD FRA 530P 830A¥1", /2 UA 929 8JAN ORD FRA 530P 830A¥1/.test(r.itinerary), r.itinerary);
-  check("seg3 FRA DXB 905A 550P", r.itinerary.includes("3 UA 958 9JAN FRA DXB 905A 550P"), r.itinerary);
+  check("seg1 JFK ORD 254P 410P", r.itinerary.includes("1 UA 5810 08JAN JFK ORD 254P 410P"), r.itinerary);
+  check("seg2 ORD FRA 530P 830A¥1", /2 UA {2}929 08JAN ORD FRA 530P 830A¥1/.test(r.itinerary), r.itinerary);
+  check("seg3 FRA DXB 905A 550P", r.itinerary.includes("3 UA  958 09JAN FRA DXB 905A 550P"), r.itinerary);
   check("seg4 DXB JFK 210A 830A", r.itinerary.includes("4 UA 4577 10JAN DXB JFK 210A 830A"), r.itinerary);
   check("layover 1 hr 5 min did not become elapsed", !r.itinerary.includes("1.05 0 N"), r.itinerary);
-  check("each row keeps its own date", r.itinerary.includes("8JAN") && r.itinerary.includes("9JAN") && r.itinerary.includes("10JAN"), r.itinerary);
+  check("each row keeps its own date", r.itinerary.includes("08JAN") && r.itinerary.includes("09JAN") && r.itinerary.includes("10JAN"), r.itinerary);
 }
 
 /* ============ USER MANDATE — block fields never bleed across flights ============ */
@@ -183,7 +185,7 @@ Duration: 12 hr 30 min`;
   check("seg2 date 30DEC", s2?.date.day === 30 && s2?.date.month === 12);
   check("seg2 dep 200P arr 730P", s2?.dep === 840 && s2?.arr === 1170);
   check("seg2 economy default Y (not D from flight 1)", s2?.bookingClass === "Y", `got ${s2?.bookingClass}`);
-  check("seg2 CABIN-ECONOMY", r.itinerary.includes("2 MS 987 30DEC CAI JFK 200P 730P --- 12.30 0 N  CABIN-ECONOMY"), r.itinerary);
+  check("seg2 CABIN-ECONOMY", r.itinerary.includes("2 MS  987 30DEC CAI JFK 200P 730P --- 12.30 0 N  CABIN-ECONOMY"), r.itinerary);
 }
 
 /* ====== REGRESSION: header-above-flight layout (ICT/LHR, United) ====== */
@@ -225,27 +227,27 @@ Economy (B) `;
     r.itinerary ===
       `1 UA 5810 22SEP ICT ORD 1055A 102P 550 2.07 0 N  CABIN-ECONOMY
 *ICT-ORD OPERATED BY SKYWEST DBA UNITED EXPRESS
-2 UA 929 22SEP ORD LHR 425P 645A¥1 767 8.20 0 N  CABIN-PREMIUM
-3 UA 958 6OCT LHR ORD 800A 1110A 767 9.10 0 N  CABIN-PREMIUM
-4 UA 4577 6OCT ORD ICT 1245P 252P 550 2.07 0 N  CABIN-ECONOMY
+2 UA  929 22SEP ORD LHR 425P 645A¥1 767 8.20 0 N  CABIN-PREMIUM
+3 UA  958 06OCT LHR ORD 800A 1110A 767 9.10 0 N  CABIN-PREMIUM
+4 UA 4577 06OCT ORD ICT 1245P 252P 550 2.07 0 N  CABIN-ECONOMY
 *ORD-ICT OPERATED BY GOJET AIRLINES DBA UNITED EXPRESS
 
 <--additional-->
 1 UA 5810B 22SEP
 2 UA 929R 22SEP
-3 UA 958R 6OCT
-4 UA 4577B 6OCT`,
+3 UA 958R 06OCT
+4 UA 4577B 06OCT`,
     r.itinerary
   );
   check("outbound", r.outbound === "0UA5810B22SEPICTORDNN1§0UA929R22SEPORDLHRNN1", r.outbound);
-  check("inbound", r.inbound === "0UA958R6OCTLHRORDNN1§0UA4577B6OCTORDICTNN1", r.inbound);
+  check("inbound", r.inbound === "0UA958R06OCTLHRORDNN1§0UA4577B06OCTORDICTNN1", r.inbound);
   check(
     "individual",
     r.individual ===
       `0UA5810B22SEPICTORDGK1
 0UA929R22SEPORDLHRGK1
-0UA958R6OCTLHRORDGK1
-0UA4577B6OCTORDICTGK1`,
+0UA958R06OCTLHRORDGK1
+0UA4577B06OCTORDICTGK1`,
     r.individual
   );
   check("trip header ICT→LHR never became a leg", !r.itinerary.includes("ICT LHR"), r.itinerary);
@@ -291,12 +293,12 @@ Business (P)`;
   check("no issues", r.issues.length === 0, JSON.stringify(r.issues));
   check(
     "CX 841 departs 15MAR (header date), not the 16MAR arrival marker",
-    r.itinerary.includes("1 CX 841 15MAR JFK HKG 1000A 205P¥1 350 16.05"),
+    r.itinerary.includes("1 CX  841 15MAR JFK HKG 1000A 205P¥1 350 16.05"),
     r.itinerary
   );
-  check("CX 500 16MAR with A330 -> 330", r.itinerary.includes("2 CX 500 16MAR HKG NRT 325P 820P 330 3.55"), r.itinerary);
-  check("CX 505 31MAR", r.itinerary.includes("3 CX 505 31MAR NRT HKG 630P 1020P 777 4.50"), r.itinerary);
-  check("CX 844 1APR same-day, no offset", r.itinerary.includes("4 CX 844 1APR HKG JFK 225A 600A 350 15.35"), r.itinerary);
+  check("CX 500 16MAR with A330 -> 330", r.itinerary.includes("2 CX  500 16MAR HKG NRT 325P 820P 330 3.55"), r.itinerary);
+  check("CX 505 31MAR", r.itinerary.includes("3 CX  505 31MAR NRT HKG 630P 1020P 777 4.50"), r.itinerary);
+  check("CX 844 01APR same-day, no offset", r.itinerary.includes("4 CX  844 01APR HKG JFK 225A 600A 350 15.35"), r.itinerary);
   check(
     "outbound chain",
     r.outbound === "0CX841P15MARJFKHKGNN1§0CX500P16MARHKGNRTNN1",
@@ -304,7 +306,7 @@ Business (P)`;
   );
   check(
     "inbound chain",
-    r.inbound === "0CX505P31MARNRTHKGNN1§0CX844P1APRHKGJFKNN1",
+    r.inbound === "0CX505P31MARNRTHKGNN1§0CX844P01APRHKGJFKNN1",
     r.inbound
   );
   check(
@@ -313,7 +315,7 @@ Business (P)`;
       `0CX841P15MARJFKHKGGK1
 0CX500P16MARHKGNRTGK1
 0CX505P31MARNRTHKGGK1
-0CX844P1APRHKGJFKGK1`,
+0CX844P01APRHKGJFKGK1`,
     r.individual
   );
 }
@@ -377,15 +379,15 @@ Economy (O)`;
   check("no issues", r.issues.length === 0, JSON.stringify(r.issues));
   check(
     "outbound chain = 2 connecting legs",
-    r.outbound === "0IB4610I4NOVMIAMADNN1§0IB529I5NOVMADLISNN1",
+    r.outbound === "0IB4610I04NOVMIAMADNN1§0IB529I05NOVMADLISNN1",
     r.outbound
   );
   check("return = the single LHR-YYZ leg", r.inbound === "0AY5999O19FEBLHRYYZNN1", r.inbound);
   check(
     "individual lists all 3 with GK1",
     r.individual ===
-      `0IB4610I4NOVMIAMADGK1
-0IB529I5NOVMADLISGK1
+      `0IB4610I04NOVMIAMADGK1
+0IB529I05NOVMADLISGK1
 0AY5999O19FEBLHRYYZGK1`,
     r.individual
   );
@@ -447,10 +449,10 @@ Business (P)`;
     r.itinerary ===
       `1 AC 8763 29MAR SAN YVR 705A 1022A 900 3.17 0 N  CABIN-BUSINESS
 *SAN-YVR OPERATED BY AIR CANADA EXPRESS - JAZZ
-2 AC 3 29MAR YVR NRT 100P 255P¥1 787 9.55 0 N  CABIN-BUSINESS
-3 GK 339 30MAR NRT OKA 705P 1010P 320 3.05 0 N  CABIN-ECONOMY
+2 AC    3 29MAR YVR NRT 100P 255P¥1 787 9.55 0 N  CABIN-BUSINESS
+3 GK  339 30MAR NRT OKA 705P 1010P 320 3.05 0 N  CABIN-ECONOMY
 4 JL 2084 15APR OKA ITM 1205P 155P 350 1.50 0 N  CABIN-BUSINESS
-5 AC 24 15APR KIX YVR 600P 1115A¥1 787 9.15 0 N  CABIN-BUSINESS
+5 AC   24 15APR KIX YVR 600P 1115A 787 9.15 0 N  CABIN-BUSINESS
 6 AC 8766 15APR YVR SAN 300P 600P 900 3.00 0 N  CABIN-BUSINESS
 *YVR-SAN OPERATED BY AIR CANADA EXPRESS - JAZZ
 
@@ -465,10 +467,12 @@ Business (P)`;
   );
   check("outbound 3-chain", r.outbound === "0AC8763P29MARSANYVRNN1§0AC3P29MARYVRNRTNN1§0GK339B30MARNRTOKANN1", r.outbound);
   check("inbound 3-chain", r.inbound === "0JL2084X15APROKAITMNN1§0AC24P15APRKIXYVRNN1§0AC8766P15APRYVRSANNN1", r.inbound);
-  check("Jetstar -> GK 339", r.itinerary.includes("3 GK 339 30MAR NRT OKA"));
+  check("Jetstar -> GK 339", r.itinerary.includes("3 GK  339 30MAR NRT OKA"));
   check("JAL -> JL 2084", r.itinerary.includes("4 JL 2084 15APR OKA ITM"));
-  check("airport change ITM then KIX kept", r.itinerary.includes("5 AC 24 15APR KIX YVR"));
-  check("AC 24 not padded to 024", r.itinerary.includes("AC 24 ") && !r.itinerary.includes("AC 024"));
+  check("airport change ITM then KIX kept", r.itinerary.includes("5 AC   24 15APR KIX YVR"));
+  /* main-itinerary flight numbers are right-aligned in a 4-char field with
+   * SPACES ("AC   24") — never BA-style zero padding, that stays BA-only */
+  check("AC 24 right-aligned with spaces, not padded to 024", r.itinerary.includes("AC   24 ") && !r.itinerary.includes("AC 024"));
   check("Canadair RJ 900 -> equip 900", r.itinerary.includes("900 3.17") && r.itinerary.includes("900 3.00"));
 }
 
@@ -512,21 +516,21 @@ Airbus A220-300 | Business Class (P)`;
   check(
     "full itinerary matches expected",
     r.itinerary ===
-      `1 LX 23 9NOV JFK GVA 735P 920A¥1 333 7.45 0 N  CABIN-BUSINESS
-*JFK-GVA OPERATED BY SWISS
-2 LX 354 10NOV GVA LHR 1250P 140P 223 1.50 0 N  CABIN-BUSINESS
-*GVA-LHR OPERATED BY SWISS
+      `1 LX   23 09NOV JFK GVA 735P 920A¥1 333 7.45 0 N  CABIN-BUSINESS
+2 LX  354 10NOV GVA LHR 1250P 140P 223 1.50 0 N  CABIN-BUSINESS
 
 <--additional-->
-1 LX 23P 9NOV
+1 LX 23P 09NOV
 2 LX 354P 10NOV`,
     r.itinerary
   );
   check("glued 'to9:20' arrival parsed with +1", r.itinerary.includes("735P 920A¥1"), r.itinerary);
   check("A330-300 -> 333", r.itinerary.includes("333 7.45"));
   check("A220-300 -> 223", r.itinerary.includes("223 1.50"));
-  check("explicit operated-by kept (same carrier)", r.itinerary.includes("*JFK-GVA OPERATED BY SWISS") && r.itinerary.includes("*GVA-LHR OPERATED BY SWISS"));
-  check("outbound chain", r.outbound === "0LX23P9NOVJFKGVANN1§0LX354P10NOVGVALHRNN1", r.outbound);
+  /* same-carrier operated-by prints NOTHING: "Operated by Swiss" on LX metal
+   * is the marketing carrier itself (compared by IATA code) */
+  check("same-carrier operated-by suppressed (Swiss = LX)", !r.itinerary.includes("OPERATED BY"), r.itinerary);
+  check("outbound chain", r.outbound === "0LX23P09NOVJFKGVANN1§0LX354P10NOVGVALHRNN1", r.outbound);
   check("no inbound (one-way)", r.inbound === "", r.inbound);
 }
 
@@ -549,13 +553,11 @@ Airbus A220-300 | Business Class (P)`;
   check(
     "AI flights produce identical Sabre output",
     r.itinerary ===
-      `1 LX 23 9NOV JFK GVA 735P 920A¥1 333 7.45 0 N  CABIN-BUSINESS
-*JFK-GVA OPERATED BY SWISS
-2 LX 354 10NOV GVA LHR 1250P 140P 223 1.50 0 N  CABIN-BUSINESS
-*GVA-LHR OPERATED BY SWISS
+      `1 LX   23 09NOV JFK GVA 735P 920A¥1 333 7.45 0 N  CABIN-BUSINESS
+2 LX  354 10NOV GVA LHR 1250P 140P 223 1.50 0 N  CABIN-BUSINESS
 
 <--additional-->
-1 LX 23P 9NOV
+1 LX 23P 09NOV
 2 LX 354P 10NOV`,
     r.itinerary
   );
@@ -641,8 +643,8 @@ OPERATED BY: SINGAPORE AIRLINES`;
   );
   check(
     "exact Sabre itinerary produced from learned memory",
-    convertedDirect.itinerary.includes("1 LX 8820 18MAY ZRH SIN 1040P 515P¥1 77W 11.35 0 N  CABIN-FIRST") &&
-      convertedDirect.itinerary.includes("2 SQ 215 19MAY SIN PER 645P 1155P 359 5.10 0 N  CABIN-BUSINESS"),
+    convertedDirect.itinerary.includes("1 LX 8820 18MAY ZRH SIN 1040P 515P¥1 77W 12.35 0 N  CABIN-FIRST") &&
+      convertedDirect.itinerary.includes("2 SQ  215 19MAY SIN PER 645P 1155P 359 5.10 0 N  CABIN-BUSINESS"),
     convertedDirect.itinerary
   );
   check("outbound chained", convertedDirect.outbound === "0LX8820F18MAYZRHSINNN1§0SQ215J19MAYSINPERNN1", convertedDirect.outbound);
