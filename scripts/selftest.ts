@@ -588,7 +588,9 @@ Duration: 13 hr 30 min`
 0AS119I01OCTSEAICNGK1
 0AS1300D15OCTSEALAXGK1`
   );
-  checkTrue("no issues on golden input", r.issues.length === 0, JSON.stringify(r.issues));
+  /* info notes (cabin inferred from a class letter) are fine on golden input;
+   * there must be no warnings or errors */
+  checkTrue("no warn/error issues on golden input", r.issues.every((i) => i.level === "info"), JSON.stringify(r.issues));
 }
 
 /* ============ STYLE A — star flag + known-flight operator lookup ============ */

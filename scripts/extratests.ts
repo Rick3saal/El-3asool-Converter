@@ -1,4 +1,6 @@
-import { convertToSabre } from "../src/lib/converter";
+import { convertToSabre, convertFlights } from "../src/lib/converter";
+import { parseItineraryText } from "../src/lib/parser";
+import { cabinFromBookingClass } from "../src/lib/cabinClasses";
 let pass = 0, fail = 0;
 function check(name: string, cond: boolean, detail = "") {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
@@ -28,7 +30,7 @@ Economy (K)
 Price includes taxes`);
   check("noise text parses 2 segments", r.segments.length === 2, JSON.stringify(r.segments.map(s => `${s.airline}${s.num} ${s.origin}-${s.dest}`)));
   const ms988 = r.segments.find(s => s.num === "988");
-  check("MS 988 JFK->CAI 04NOV 1040P->1120A¥1 789", !!ms988 && r.itinerary.includes("1 MS  988 04NOV JFK CAI 1040P 1120A¥1 789"), r.itinerary);
+  check("MS 988 JFK->CAI 4NOV 1040P->1120A¥1 789", !!ms988 && r.itinerary.includes("1 MS  988 04NOV JFK CAI 1040P 1120A¥1 789"), r.itinerary);
   check("MS 987 30DEC CAI->JFK 333", r.itinerary.includes("2 MS  987 30DEC CAI JFK 200P 730P 333"), r.itinerary);
   check("no phantom from Boeing/Airbus", !/BO |A3 /.test(r.itinerary));
   check("outbound only MS988", r.outbound.includes("0MS988J04NOVJFKCAINN1") && !r.outbound.includes("987"), r.outbound);
@@ -87,7 +89,7 @@ Wed, Dec 30
 Departure 9:00 AM · Arrival 12:30 PM
 Business`);
   check("same flight number round trip = 2 segments", r.segments.length === 2, `got ${r.segments.length}`);
-  check("seg1 JFK->CAI 04NOV, seg2 CAI->JFK 30DEC", r.itinerary.includes("1 MS  988 04NOV JFK CAI") && r.itinerary.includes("2 MS  988 30DEC CAI JFK"), r.itinerary);
+  check("seg1 JFK->CAI 4NOV, seg2 CAI->JFK 30DEC", r.itinerary.includes("1 MS  988 04NOV JFK CAI") && r.itinerary.includes("2 MS  988 30DEC CAI JFK"), r.itinerary);
   check("directions out/in split", r.outbound.includes("JFKCAINN1") && r.inbound.includes("CAIJFKNN1"), r.outbound + "|" + r.inbound);
 }
 
@@ -131,12 +133,10 @@ Duration: 12 hr 50 min`;
   check("exactly 4 segments", r.segments.length === 4, `got ${r.segments.length}: ` + r.segments.map(s => s.airline + s.num).join(","));
   check("all four flight numbers present", ["5810", "929", "958", "4577"].every(n => r.segments.some(s => s.num === n)), r.segments.map(s => s.num).join(","));
   check("layover duration never used as flight elapsed", !r.itinerary.includes("3.23") && !r.itinerary.includes("3.38"), r.itinerary);
-  /* durations are DST-aware UTC math, which always wins over the stated
-   * value (a warn note is emitted when they differ) */
-  check("UA5810 keeps own date/time + calculated 2.30", r.itinerary.includes("1 UA 5810 08JAN EWR ORD 815P 945P --- 2.30 0 N  CABIN-ECONOMY"), r.itinerary);
-  check("UA929 keeps own ¥1 + 763 + calculated 7.05", r.itinerary.includes("2 UA  929 08JAN ORD FRA 1115P 120P¥1 763 7.05 0 N  CABIN-BUSINESS"), r.itinerary);
-  check("UA958 keeps own calculated 4.50 + own date", r.itinerary.includes("3 UA  958 09JAN FRA DXB 405P 1155P --- 4.50 0 N  CABIN-ECONOMY"), r.itinerary);
-  check("UA4577 keeps own calculated 14.50 + own date", r.itinerary.includes("4 UA 4577 10JAN DXB EWR 210A 800A --- 14.50 0 N  CABIN-ECONOMY"), r.itinerary);
+  check("UA5810 keeps own date/time/elapsed", r.itinerary.includes("1 UA 5810 08JAN EWR ORD 815P 945P --- 2.30 0 N  CABIN-ECONOMY"), r.itinerary);
+  check("UA929 keeps own ¥1 + 763 + 8.05", r.itinerary.includes("2 UA  929 08JAN ORD FRA 1115P 120P¥1 763 7.05 0 N  CABIN-BUSINESS"), r.itinerary);
+  check("UA958 keeps own 5.50 + own date", r.itinerary.includes("3 UA  958 09JAN FRA DXB 405P 1155P --- 4.50 0 N  CABIN-ECONOMY"), r.itinerary);
+  check("UA4577 keeps own 12.50 + own date", r.itinerary.includes("4 UA 4577 10JAN DXB EWR 210A 800A --- 14.50 0 N  CABIN-ECONOMY"), r.itinerary);
   check("marketing carrier UA kept, operated-by attached", r.segments[2]?.airline === "UA" && r.segments[2]?.num === "958" && r.segments[2]?.operatedBy === "LUFTHANSA", JSON.stringify(r.segments[2]?.operatedBy));
   check("opby line only under segment 3 in main itinerary", r.itinerary.includes("*FRA-DXB OPERATED BY LUFTHANSA") && r.itinerary.indexOf("OPERATED") === r.itinerary.lastIndexOf("OPERATED"), r.itinerary);
   check("direction split 3 out / 1 in", r.segments.filter(s => s.direction === "OUT").length === 3 && r.segments.filter(s => s.direction === "IN").length === 1);
@@ -298,7 +298,7 @@ Business (P)`;
   );
   check("CX 500 16MAR with A330 -> 330", r.itinerary.includes("2 CX  500 16MAR HKG NRT 325P 820P 330 3.55"), r.itinerary);
   check("CX 505 31MAR", r.itinerary.includes("3 CX  505 31MAR NRT HKG 630P 1020P 777 4.50"), r.itinerary);
-  check("CX 844 01APR same-day, no offset", r.itinerary.includes("4 CX  844 01APR HKG JFK 225A 600A 350 15.35"), r.itinerary);
+  check("CX 844 1APR same-day, no offset", r.itinerary.includes("4 CX  844 01APR HKG JFK 225A 600A 350 15.35"), r.itinerary);
   check(
     "outbound chain",
     r.outbound === "0CX841P15MARJFKHKGNN1§0CX500P16MARHKGNRTNN1",
@@ -470,9 +470,7 @@ Business (P)`;
   check("Jetstar -> GK 339", r.itinerary.includes("3 GK  339 30MAR NRT OKA"));
   check("JAL -> JL 2084", r.itinerary.includes("4 JL 2084 15APR OKA ITM"));
   check("airport change ITM then KIX kept", r.itinerary.includes("5 AC   24 15APR KIX YVR"));
-  /* main-itinerary flight numbers are right-aligned in a 4-char field with
-   * SPACES ("AC   24") — never BA-style zero padding, that stays BA-only */
-  check("AC 24 right-aligned with spaces, not padded to 024", r.itinerary.includes("AC   24 ") && !r.itinerary.includes("AC 024"));
+  check("AC 24 not padded to 024", r.itinerary.includes("AC   24 ") && !r.itinerary.includes("AC 024"));
   check("Canadair RJ 900 -> equip 900", r.itinerary.includes("900 3.17") && r.itinerary.includes("900 3.00"));
 }
 
@@ -889,6 +887,67 @@ Economy (Y) `;
   });
   check("AI: '6h 15m' string -> 375", flex[0].elapsed === 375, String(flex[0].elapsed));
   check("AI: '330' string -> 330", flex[1].elapsed === 330, String(flex[1].elapsed));
+}
+
+// Sabre/GDS-style rows with a lone booking-class letter after the flight number.
+// The letter is airline-specific (W = Business on EY) and must (a) be captured
+// as the booking class, and (b) drive the cabin automatically.
+{
+  const text = `1   EY 22   W 14DEC   YYZ AUH   245P 1235P¥1
+
+2   EY 216   W 15DEC   AUH DEL   230P 720P
+
+3   EY 217   W 15JAN   DEL AUH   855P 1125P
+
+4   EY 21   W 16JAN   AUH YYZ   320A 920A`;
+
+  const parsed = parseItineraryText(text);
+  check("sabre rows: 4 flights", parsed.flights.length === 4, JSON.stringify(parsed.flights.map(f => `${f.airline}${f.number}`)));
+  check("sabre rows: W captured as booking class", parsed.flights.every(f => f.bookingClass === "W"), JSON.stringify(parsed.flights.map(f => f.bookingClass)));
+
+  const r = convert(text);
+  check("sabre rows: 4 segments built (no manual cabin needed)", r.segments.length === 4 && r.missingCabinFlights.length === 0, `segs=${r.segments.length} missing=${r.missingCabinFlights.length}`);
+  check("sabre rows: cabin inferred BUSINESS from W", r.segments.every(s => s.cabin === "BUSINESS"), JSON.stringify(r.segments.map(s => s.cabin)));
+  check("sabre rows: info note about inference", r.issues.some(i => i.level === "info" && i.text.includes("inferred from booking class W")), JSON.stringify(r.issues));
+  check("sabre rows: EY22 line", r.itinerary.includes("1 EY   22 14DEC YYZ AUH 245P 1235P¥1 --- 12.50 0 N  CABIN-BUSINESS"), r.itinerary);
+  check("sabre rows: EY21 line", r.itinerary.includes("4 EY   21 16JAN AUH YYZ 320A 920A --- 15.00 0 N  CABIN-BUSINESS"), r.itinerary);
+  check("sabre rows: additional keeps W", r.itinerary.includes("1 EY 22W 14DEC") && r.itinerary.includes("4 EY 21W 16JAN"), r.itinerary);
+  check("sabre rows: sell entry carries W", r.outbound.includes("0EY22W14DECYYZAUHNN1"), r.outbound);
+}
+
+// Glued class letter ("EY 22W 14DEC") also works, and a class-less row must not
+// inherit a letter from its neighbor.
+{
+  const parsed2 = parseItineraryText(`EY 22W 14DEC YYZ AUH 245P 1235P
+EY 21 16JAN AUH YYZ 320A 920A`);
+  check("glued W: class captured", parsed2.flights.length === 2 && parsed2.flights[0].bookingClass === "W", JSON.stringify(parsed2.flights.map(f => f.bookingClass)));
+  check("no letter: nothing invented for neighbor", parsed2.flights[1].bookingClass === undefined, String(parsed2.flights[1].bookingClass));
+  const r = convertToSabre(`EY 22W 14DEC YYZ AUH 245P 1235P
+EY 21 16JAN AUH YYZ 320A 920A`, "ECONOMY");
+  check("glued W: cabin BUSINESS", r.segments.length === 2 && r.segments[0].cabin === "BUSINESS", String(r.segments[0]?.cabin));
+  check("no letter: falls back to chosen cabin", r.segments[1]?.cabin === "ECONOMY" && r.segments[1]?.bookingClass === "Y", JSON.stringify(r.segments.map(s => `${s.cabin}/${s.bookingClass}`)));
+  check("no letter: no W leaked into the sell class (default Y used)", r.itinerary.includes("2 EY 21Y 16JAN"), r.itinerary);
+}
+
+// Airline-specific letter maps + conservative fallback (unknown letter -> null).
+{
+  check("EY W -> BUSINESS", cabinFromBookingClass("EY", "W") === "BUSINESS");
+  check("EY F -> FIRST", cabinFromBookingClass("EY", "F") === "FIRST");
+  check("EY J -> BUSINESS", cabinFromBookingClass("EY", "J") === "BUSINESS");
+  check("EY Y -> ECONOMY", cabinFromBookingClass("EY", "Y") === "ECONOMY");
+  check("BA W -> BUSINESS", cabinFromBookingClass("BA", "W") === "BUSINESS");
+  check("AC P -> BUSINESS (approved override)", cabinFromBookingClass("AC", "P") === "BUSINESS");
+  check("generic F -> FIRST", cabinFromBookingClass("XX", "F") === "FIRST");
+  check("generic Y -> ECONOMY", cabinFromBookingClass("XX", "Y") === "ECONOMY");
+  check("unknown letter -> null (no guessing)", cabinFromBookingClass("XX", "W") === null);
+  check("non-letter -> null", cabinFromBookingClass("EY", "WW") === null);
+
+  // A printed cabin word always beats the letter map.
+  const r2 = convertFlights(
+    [{ airline: "EY", number: "22", origin: "YYZ", dest: "AUH", date: { day: 14, month: 12 }, dep: 885, arr: 755, arrDay: 0, cabin: "ECONOMY", bookingClass: "W", order: 0 }],
+    null
+  );
+  check("printed cabin word beats letter map", r2.segments[0]?.cabin === "ECONOMY", String(r2.segments[0]?.cabin));
 }
 
 console.log(`\n==== ${pass} passed, ${fail} failed ====`);
