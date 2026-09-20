@@ -10,6 +10,8 @@ import { airlineFromName, isAirlineCode, AIRLINE_NAMES } from "./airlines";
 import { findAircraftTokens, parseExplicitAircraftString } from "./aircraft";
 import { cityToCode, sameCity } from "./airports";
 import { lookupFlightKnowledge } from "./learning";
+import { lookupKnownFlight } from "./knownFlights";
+import { lookupCabinForClass } from "./cabinClasses";
 
 const MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
@@ -199,6 +201,36 @@ function tokenize(text: string): { toks: Tok[]; opbyRanges: Array<[number, numbe
     push({ kind: "TIME", start: m.index, end: m.index + m[0].length, min: timeToMin(h, mm, m[3] === "P") });
   }
 
+  // 4-digit 24-hour military times: e.g. "BLR VTZ 0905 1045", "VTZ BLR 1735 1920", "BLR CDG 0145 0800"
+  const militaryPairRe =
+    /(?<=[A-Z]{3}[\s→\-]+[A-Z]{3}\s+)(0\d|1\d|2[0-3])([0-5]\d)\s*(?:[-–—\s]|to)\s*(0\d|1\d|2[0-3])([0-5]\d)(?:([+¥#])(\d))?/gi;
+  while ((m = militaryPairRe.exec(text)) !== null) {
+    const depH = parseInt(m[1], 10);
+    const depM = parseInt(m[2], 10);
+    const arrH = parseInt(m[3], 10);
+    const arrM = parseInt(m[4], 10);
+    const depStart = m.index;
+    const depEnd = depStart + 4;
+    push({ kind: "TIME", start: depStart, end: depEnd, min: depH * 60 + depM, bare: true });
+
+    const arrStr = m[3] + m[4];
+    const arrStart = m.index + m[0].indexOf(arrStr, 4);
+    const arrEnd = arrStart + 4;
+    push({ kind: "TIME", start: arrStart, end: arrEnd, min: arrH * 60 + arrM, bare: true });
+
+    if (m[6]) {
+      push({ kind: "DAYOFF", start: arrEnd, end: m.index + m[0].length, day: parseInt(m[6], 10) });
+    }
+  }
+
+  const militarySingleRe =
+    /(?<=(?:dep|departure|arr|arrival|depart|arrive)\s*[:：]?\s*)(0\d|1\d|2[0-3])([0-5]\d)(?![0-9])/gi;
+  while ((m = militarySingleRe.exec(text)) !== null) {
+    const h = parseInt(m[1], 10);
+    const mm = parseInt(m[2], 10);
+    push({ kind: "TIME", start: m.index, end: m.index + m[0].length, min: h * 60 + mm, bare: true });
+  }
+
   /* city codes in parentheses */
   const cityRe = /\(([A-Z]{3})\)/g;
   while ((m = cityRe.exec(text)) !== null) {
@@ -253,6 +285,13 @@ function tokenize(text: string): { toks: Tok[]; opbyRanges: Array<[number, numbe
     if (/(booking|fare|rbd|reservation|premium|business|economy|first|seat)/.test(before)) {
       push({ kind: "CLASS", start: m.index, end: m.index + m[0].length, cls: m[1].toUpperCase() });
     }
+  }
+
+  // GDS line style: "AF*3775 B 04DEC" or "AF 50 Z 03DEC" or "100 Y 15NOV"
+  const gdsClassRe =
+    /(?<=(?:[A-Z0-9]{2}[\s\*]+\d{1,4}|\b\d{1,4})\s+)([A-Z])(?=\s+\d{1,2}\s*(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b)/gi;
+  while ((m = gdsClassRe.exec(text)) !== null) {
+    push({ kind: "CLASS", start: m.index, end: m.index + m[0].length, cls: m[1].toUpperCase() });
   }
 
   /* elapsed durations */
@@ -338,11 +377,11 @@ function extractRouteChains(
     // row style: "UA 929 ORD FRA 130P 400P" — adjacent codes with no arrow
     // belong to the flight on the same line. Only allowed when the line
     // itself contains a real flight (airline code/name + number).
-    const lineCoreRe = /\b[A-Z]{2,3}\s*\d{1,4}\b/;
+    const lineCoreRe = /\b[A-Z0-9]{2,3}[\s\*]+\d{1,4}\b/;
     const hasCoreOnLine =
       lineCoreRe.test(line) &&
       (() => {
-        const mm = /(?<![A-Za-z0-9])([A-Z0-9]{2})[\s-]?(\d{1,4})(?![0-9])/.exec(line);
+        const mm = /(?<![A-Za-z0-9])([A-Z0-9]{2})\)?(?:\*|\s*\*|\*\s*|[\s-])?(\d{1,4})(?![0-9])/.exec(line);
         if (mm && isAirlineCode(mm[1])) return true;
         return /(?:american\s+airlines|british\s+airways|united\s+airlines|delta\s+air\s+lines|egyptair|air\s+canada|air\s+serbia|qatar\s+airways|emirates|etihad|klm|air\s+france|lufthansa|turkish\s+airlines)\s*\d/i.test(line);
       })();
@@ -389,6 +428,7 @@ interface Core {
   number: string;
   start: number;
   end: number;
+  hasStarFlag?: boolean;
 }
 
 function escapeRe(s: string): string {
@@ -418,7 +458,7 @@ function findCores(text: string, opbyRanges: Array<[number, number]>): Core[] {
     }
   }
 
-  const codeRe = /(?<![A-Za-z0-9])([A-Z0-9]{2})\)?[\s-]?(\d{1,4})(?![0-9])/g;
+  const codeRe = /(?<![A-Za-z0-9])([A-Z0-9]{2})\)?(?:\*|\s*\*|\*\s*|[\s-])?(\d{1,4})(?![0-9])/g;
   let m: RegExpExecArray | null;
   const aircraftSpans = findAircraftTokens(text).map((a) => [a.start, a.end] as const);
   const inAircraft = (pos: number, end: number) =>
@@ -429,11 +469,13 @@ function findCores(text: string, opbyRanges: Array<[number, number]>): Core[] {
     if (!isAirlineCode(code)) continue;
     if (inOpby(m.index)) continue;
     if (inAircraft(m.index, m.index + m[0].length)) continue; // never a segment
+    const hasStar = m[0].includes("*");
     cores.push({
       airline: code,
       number: String(parseInt(m[2], 10)),
       start: m.index,
       end: m.index + m[0].length,
+      hasStarFlag: hasStar,
     });
   }
 
@@ -445,6 +487,7 @@ function findCores(text: string, opbyRanges: Array<[number, number]>): Core[] {
 interface Work {
   airline: string;
   number: string;
+  hasStarFlag?: boolean;
   origin?: string;
   dest?: string;
   date?: ParsedDate;
@@ -742,6 +785,7 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
     const w: Work = {
       airline: core.airline,
       number: core.number,
+      hasStarFlag: core.hasStarFlag,
       arrDay: 0,
       arrDayExplicit: false,
       elapsedExplicit: false,
@@ -995,9 +1039,15 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
     if (nearCabinCls.length > 0) {
       nearCabinCls.sort((a, b) => tokDist(a, core) - tokDist(b, core));
       w.bookingClass = nearCabinCls[0].cls;
-    } else if (clsBag.length > 0 && cabins.length > 0) {
-      const close = clsBag.filter((t) => tokDist(t, core) < 200);
+    } else if (clsBag.length > 0) {
+      const close = clsBag.filter((t) => tokDist(t, core) < 300);
       if (close.length > 0) w.bookingClass = close[0].cls;
+    }
+
+    /* check confirmed or learned cabin for this class */
+    if (!w.cabin && w.bookingClass) {
+      const confirmedCabin = lookupCabinForClass(w.airline, w.bookingClass);
+      if (confirmedCabin) w.cabin = confirmedCabin;
     }
 
     /* learned cabin / booking class fallback */
@@ -1085,6 +1135,15 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
       if (k?.operatedBy) w.operatedBy = k.operatedBy;
     }
 
+    // Check known-flight table (check it before searching)
+    if (!w.operatedBy || !w.equip || w.equip === "---") {
+      const known = lookupKnownFlight(w.airline, w.number, w.origin, w.dest);
+      if (known) {
+        if (!w.operatedBy) w.operatedBy = known.operator;
+        if ((!w.equip || w.equip === "---") && known.equip) w.equip = known.equip;
+      }
+    }
+
     w.layover = bag.some((t) => t.kind === "LAYOVER");
 
     works.push(w);
@@ -1097,11 +1156,11 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
       (d) =>
         d.airline === w.airline &&
         d.number === w.number &&
+        Boolean(d.hasStarFlag) === Boolean(w.hasStarFlag) &&
         (!d.origin || !w.origin || d.origin === w.origin) &&
         (!d.dest || !w.dest || d.dest === w.dest) &&
         (!d.date || !w.date || (d.date.day === w.date.day && d.date.month === w.date.month)) &&
-        (d.dep === undefined || w.dep === undefined || d.dep === w.dep) &&
-        (d.arr === undefined || w.arr === undefined || d.arr === w.arr)
+        (d.dep === undefined || w.dep === undefined)
     );
     if (target) mergeWork(target, w);
     else deduped.push({ ...w });
@@ -1161,6 +1220,7 @@ function clsHasKeyword(text: string, t: Tok): boolean {
 }
 
 function mergeWork(target: Work, w: Work) {
+  if (w.hasStarFlag) target.hasStarFlag = true;
   if (!target.origin) target.origin = w.origin;
   if (!target.dest) target.dest = w.dest;
   if (!target.date) target.date = w.date;
@@ -1363,6 +1423,7 @@ export function parseItineraryText(rawText: string): ParseResult {
     arrDay: w.arrDay,
     cabin: w.cabin,
     bookingClass: w.bookingClass,
+    hasStarFlag: w.hasStarFlag,
     equip: w.equip,
     equipRaw: w.equipRaw,
     elapsed: w.elapsed,

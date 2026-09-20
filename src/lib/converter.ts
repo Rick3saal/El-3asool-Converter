@@ -3,7 +3,7 @@
  * Both TEXT and IMAGE (OCR) flows converge here — one conversion path,
  * one formatter, one validator.
  */
-import { Cabin, ConverterResult, Issue, RawFlight, Segment } from "./types";
+import { Cabin, ConverterResult, Issue, RawFlight, Segment, UnknownClassQuestion } from "./types";
 import { parseItineraryText, splitDirections } from "./parser";
 import {
   additionalLine,
@@ -22,6 +22,11 @@ import {
   lookupLearnedAircraft,
 } from "./learning";
 import { parseExplicitAircraftString } from "./aircraft";
+import {
+  lookupCabinForClass,
+  provisionalCabinFor,
+} from "./cabinClasses";
+import { lookupKnownFlight } from "./knownFlights";
 
 const DEFAULT_CLASS: Record<Cabin, string> = {
   FIRST: "I",
@@ -64,6 +69,9 @@ export function convertFlights(
 ): ConverterResult {
   const issues: Issue[] = [...baseIssues];
   const missingCabinFlights: string[] = [];
+  const unknownClassQuestions: UnknownClassQuestion[] = [];
+  const failedOperatorFlights: string[] = [];
+  const failedEquipmentFlights: string[] = [];
   const segments: Segment[] = [];
   const excluded: string[] = [];
 
@@ -96,38 +104,87 @@ export function convertFlights(
       });
       continue;
     }
-    const cabin = f.cabin ?? fallbackCabin;
-    if (!cabin) {
-      missingCabinFlights.push(`${label} · ${f.origin} → ${f.dest}`);
-      continue;
+
+    // Cabin & booking class determination:
+    // Rule: a line that has a class letter (e.g. Z on AF 191) is NEVER "cabin not stated".
+    // Never hide that segment and never offer to replace the letter with a default one.
+    let cabin: Cabin;
+    let bookingClass: string;
+
+    if (f.bookingClass && /^[A-Z]$/i.test(f.bookingClass)) {
+      const letter = f.bookingClass.toUpperCase();
+      bookingClass = letter; // keep exactly as given
+      if (f.cabin) {
+        cabin = f.cabin;
+      } else {
+        const knownCabin = lookupCabinForClass(f.airline, letter);
+        if (knownCabin) {
+          cabin = knownCabin;
+        } else {
+          // Unknown pair: use provisional cabin, and ask "What cabin is <AIRLINE> class <LETTER>?"
+          cabin = fallbackCabin || provisionalCabinFor(letter);
+          if (!unknownClassQuestions.some((q) => q.airline === f.airline && q.classLetter === letter)) {
+            unknownClassQuestions.push({
+              airline: f.airline,
+              classLetter: letter,
+              flightLabel: `${label}${route}`,
+            });
+          }
+        }
+      }
+    } else if (f.cabin) {
+      cabin = f.cabin;
+      bookingClass = DEFAULT_CLASS[cabin];
+    } else {
+      // Neither class letter nor cabin stated: ask for cabin, provisional Economy
+      cabin = fallbackCabin ?? "ECONOMY";
+      bookingClass = DEFAULT_CLASS[cabin];
+      const fltDesc = `${label} · ${f.origin} → ${f.dest}`;
+      if (!missingCabinFlights.includes(fltDesc)) {
+        missingCabinFlights.push(fltDesc);
+      }
     }
-    const bookingClass = f.bookingClass && /^[A-Z]$/.test(f.bookingClass) ? f.bookingClass : DEFAULT_CLASS[cabin];
-    /* The user's supplied flight data is the primary source of truth for aircraft.
-     * Always use explicitly supplied aircraft information first, converting to Sabre code.
-     * Only use external / learned lookup when the user's input does not provide aircraft.
-     * Never replace explicitly supplied aircraft with "---". */
+
+    /* Equipment lookup */
     const directEquip = (f.equip && f.equip !== "---")
       ? f.equip
       : (f.equipRaw ? parseExplicitAircraftString(f.equipRaw, f.airline) : null);
-    const learnedEquip = !directEquip ? lookupLearnedAircraft(f.equipRaw) : undefined;
-    const equip = directEquip || learnedEquip || "---";
-    if (!directEquip && !learnedEquip) {
+    let learnedEquip = !directEquip ? lookupLearnedAircraft(f.equipRaw) : undefined;
+    let equip = directEquip || learnedEquip;
+    if (!equip || equip === "---") {
+      const known = lookupKnownFlight(f.airline, f.number, f.origin, f.dest);
+      if (known?.equip) equip = known.equip;
+    }
+    if (!equip || equip === "---") {
+      equip = "---";
+      if (!failedEquipmentFlights.includes(label)) {
+        failedEquipmentFlights.push(label);
+      }
       issues.push({
         level: "warn",
-        text: `${label}${route}: aircraft not found in the source — equipment shown as ---. Add the aircraft type to the itinerary if you want it filled automatically.`,
+        text: `equipment not found for ${label}${route}.`,
       });
     }
+
+    /* Operator lookup */
+    let operatedBy = f.operatedBy;
+    if (!operatedBy) {
+      const known = lookupKnownFlight(f.airline, f.number, f.origin, f.dest);
+      if (known?.operator) operatedBy = known.operator;
+    }
+    if (f.hasStarFlag && !operatedBy) {
+      if (!failedOperatorFlights.includes(label)) {
+        failedOperatorFlights.push(label);
+      }
+      issues.push({
+        level: "warn",
+        text: `operator not found for ${label} (lookup failed).`,
+      });
+    }
+
     const elapsed = resolveElapsed(f.origin!, f.dest!, f.dep!, f.arr!, f.elapsed);
-    if (!elapsed.confident && !f.elapsedExplicit) {
-      issues.push({
-        level: "warn",
-        text: `${label}${route}: duration not stated in the source — elapsed time estimated from clock times.`,
-      });
-    }
-    // Per the source-of-truth rules, whenever the itinerary explicitly states
-    // "Operated by X" we emit the operated-by line for that segment — even when
-    // X is the marketing carrier itself (e.g. LX 23 "Operated by Swiss").
-    const operatedBy = f.operatedBy;
+    // Note: "duration not stated in the source" warning removed per requirement 6
+
     segments.push({
       airline: f.airline,
       num: displayFlightNumber(f.number, f.airline),
@@ -142,6 +199,7 @@ export function convertFlights(
       elapsed: elapsed.minutes,
       cabin,
       bookingClass,
+      hasStarFlag: f.hasStarFlag,
       operatedBy,
       direction: f.direction ?? "OUT",
     });
@@ -153,7 +211,7 @@ export function convertFlights(
 
   if (missingCabinFlights.length > 0) {
     issues.push({
-      level: "error",
+      level: "warn",
       text:
         missingCabinFlights.length === 1
           ? `${missingCabinFlights[0]}: cabin not stated in the source — choose a cabin below so the booking class can be assigned.`
@@ -167,7 +225,14 @@ export function convertFlights(
     });
   }
 
-  return assembleFromSegments(learnedSegments, issues, missingCabinFlights);
+  return assembleFromSegments(
+    learnedSegments,
+    issues,
+    missingCabinFlights,
+    unknownClassQuestions,
+    failedOperatorFlights,
+    failedEquipmentFlights
+  );
 }
 
 /**
@@ -178,7 +243,10 @@ export function convertFlights(
 export function assembleFromSegments(
   segments: Segment[],
   issues: Issue[] = [],
-  missingCabinFlights: string[] = []
+  missingCabinFlights: string[] = [],
+  unknownClassQuestions: UnknownClassQuestion[] = [],
+  failedOperatorFlights: string[] = [],
+  failedEquipmentFlights: string[] = []
 ): ConverterResult {
   const outSegs = segments.filter((s) => s.direction === "OUT");
   const inSegs = segments.filter((s) => s.direction === "IN");
@@ -222,6 +290,9 @@ export function assembleFromSegments(
     issues,
     hasOutput: segments.length > 0,
     missingCabinFlights,
+    unknownClassQuestions,
+    failedOperatorFlights,
+    failedEquipmentFlights,
   };
 }
 

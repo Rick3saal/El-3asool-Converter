@@ -502,11 +502,10 @@ Economy (G)
 Duration: 2 hr 2 min
 Operated by Air Canada`
   );
-  // Explicitly-stated operated-by is always emitted (even when it names the
-  // marketing carrier itself), per the source-of-truth instruction.
+  // Operator is same as marketing carrier -> no operated-by line per requirement
   checkTrue(
-    "explicit operated-by always emitted",
-    r2.itinerary.includes("*CLT-YYZ OPERATED BY AIR CANADA"),
+    "operated-by omitted when same carrier (AC + Air Canada)",
+    !r2.itinerary.includes("OPERATED BY"),
     r2.itinerary
   );
 }

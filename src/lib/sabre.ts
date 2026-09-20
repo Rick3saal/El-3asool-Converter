@@ -13,6 +13,51 @@
  */
 import { Segment, Cabin, Direction, Issue } from "./types";
 import { estimateElapsed } from "./airports";
+import { airlineFromName } from "./airlines";
+
+const PRIMARY_MARKETING_ALIASES: Record<string, string[]> = {
+  AF: ["AF", "AIR FRANCE"],
+  AS: ["AS", "ALASKA", "ALASKA AIRLINES"],
+  LX: ["LX", "SWISS", "SWISS INTERNATIONAL AIR LINES", "SWISS INTERNATIONAL AIRLINES"],
+  UA: ["UA", "UNITED", "UNITED AIRLINES"],
+  AA: ["AA", "AMERICAN", "AMERICAN AIRLINES"],
+  DL: ["DL", "DELTA", "DELTA AIR LINES", "DELTA AIRLINES"],
+  BA: ["BA", "BRITISH AIRWAYS"],
+  LH: ["LH", "LUFTHANSA"],
+  AC: ["AC", "AIR CANADA"],
+  KL: ["KL", "KLM", "KLM ROYAL DUTCH AIRLINES"],
+};
+
+const REGIONAL_SUBSIDIARY_KEYWORDS = [
+  "EXPRESS", "EAGLE", "CONNECTION", "HOP", "CITYLINE", "CITYFLYER",
+  "ROUGE", "JAZZ", "HORIZON", "SKYWEST", "DBA", "AIRLINK", "ENVOY",
+  "PIEDMONT", "PSA", "REPUBLIC", "MESA", "COMMUTAIR", "GOJET", "ENDEAVOR",
+];
+
+export function shouldPrintOperatedBy(airline: string, operator: string | undefined): boolean {
+  if (!operator) return false;
+  const opUpper = operator.toUpperCase().trim();
+  const alUpper = airline.toUpperCase().trim();
+
+  // Regional or subsidiary operators count as different and still print the line
+  const isRegionalOrSubsidiary = REGIONAL_SUBSIDIARY_KEYWORDS.some((kw) =>
+    new RegExp(`\\b${kw}\\b`, "i").test(opUpper)
+  );
+  if (isRegionalOrSubsidiary) return true;
+
+  // Compare against marketing airline code and primary aliases
+  const aliases = PRIMARY_MARKETING_ALIASES[alUpper];
+  if (aliases) {
+    const cleanOp = opUpper.replace(/[^A-Z ]/g, " ").replace(/\s+/g, " ").trim();
+    if (aliases.includes(cleanOp)) return false; // same carrier -> do not print
+  }
+
+  // Also check if airlineFromName matches the marketing airline
+  const opCode = airlineFromName(opUpper);
+  if (opCode && opCode === alUpper) return false;
+
+  return true;
+}
 
 const MON3 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
@@ -79,7 +124,8 @@ export function chainLines(segments: Segment[]): string[] {
 
 export function operatedByLine(s: Segment): string | null {
   if (!s.operatedBy) return null;
-  return `*${s.origin}-${s.dest} OPERATED BY ${s.operatedBy}`;
+  if (!shouldPrintOperatedBy(s.airline, s.operatedBy)) return null;
+  return `*${s.origin}-${s.dest} OPERATED BY ${s.operatedBy.toUpperCase().trim()}`;
 }
 
 /** Validate every produced string against the hard rules. */

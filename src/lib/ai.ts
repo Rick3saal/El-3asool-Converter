@@ -9,9 +9,10 @@
  *
  * The user supplies their own API key, stored only in this browser.
  */
-import type { Cabin, RawFlight } from "./types";
+import type { Cabin, ConverterResult, Issue, RawFlight, Segment } from "./types";
 import { timeToMinutes } from "./aiTime";
 import { findAircraftTokens, parseExplicitAircraftString } from "./aircraft";
+import { lookupKnownFlight } from "./knownFlights";
 
 export type AiProvider = "gemini" | "openai" | "custom";
 
@@ -57,7 +58,8 @@ Rules:
 - cabin is one of FIRST, BUSINESS, PREMIUM, ECONOMY. bookingClass is the single
   letter if the source states one (e.g. "Business (P)" -> "P"), else "".
 - operatedBy: the operator name exactly as printed if the source says
-  "Operated by X" (keep the whole name, e.g. "SKYWEST DBA UNITED EXPRESS"), else "".
+  "Operated by X" (keep the whole name, e.g. "SKYWEST DBA UNITED EXPRESS"), or codeshare operator, else "".
+- hasStarFlag: true if the segment in the source has an asterisk '*' flag (e.g. "AF*3775"), else false.
 - Preserve source order; it is usually outbound flights first, then the return.
 - Do NOT invent data. If a field is truly absent, use "" (or null).
 
@@ -92,6 +94,7 @@ export interface AiFlightJson {
   cabin?: string;
   bookingClass?: string;
   operatedBy?: string;
+  hasStarFlag?: boolean;
   /** the flight's own block time in minutes (never a layover duration) */
   durationMinutes?: number | string | null;
   /** tolerated aliases some models emit instead of durationMinutes */
@@ -198,13 +201,27 @@ export function toRawFlights(json: { flights?: AiFlightJson[] }): RawFlight[] {
     const acTok = !acExplicit && acPhrase
       ? findAircraftTokens(acPhrase).find((t) => t.equip)
       : undefined;
-    const equip = acExplicit ?? acTok?.equip ?? undefined;
+    let equip = acExplicit ?? acTok?.equip ?? undefined;
 
     // The flight's own duration, if the model reported one.
     const elapsed =
       parseDurationField(j.durationMinutes) ??
       parseDurationField(j.duration) ??
       parseDurationField(j.elapsedMinutes);
+
+    let operatedBy = j.operatedBy ? j.operatedBy.toUpperCase().trim() : undefined;
+
+    // Check known-flight table before giving up on operator or equipment
+    const known = lookupKnownFlight(airline, number, origin, dest);
+    if (known) {
+      if (!operatedBy) operatedBy = known.operator;
+      if (!equip || equip === "---") equip = known.equip;
+    }
+
+    const hasStarFlag =
+      j.hasStarFlag === true ||
+      (typeof j.flightNumber === "string" && j.flightNumber.includes("*")) ||
+      false;
 
     out.push({
       airline,
@@ -221,7 +238,8 @@ export function toRawFlights(json: { flights?: AiFlightJson[] }): RawFlight[] {
       equipRaw: acPhrase || undefined,
       elapsed,
       elapsedExplicit: elapsed !== undefined,
-      operatedBy: j.operatedBy ? j.operatedBy.toUpperCase() : undefined,
+      hasStarFlag,
+      operatedBy,
       order: i,
     });
   });
@@ -232,50 +250,100 @@ export function toRawFlights(json: { flights?: AiFlightJson[] }): RawFlight[] {
 /* Provider calls                                                      */
 /* ------------------------------------------------------------------ */
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function isRetryableError(err: unknown): boolean {
+  if (!err) return false;
+  const status = (err as { status?: number }).status;
+  if (status === 503 || status === 429 || status === 500 || status === 502 || status === 504) {
+    return true;
+  }
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    msg.includes("503") ||
+    msg.includes("429") ||
+    msg.includes("unavailable") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("resource has been exhausted") ||
+    msg.includes("rate limit") ||
+    msg.includes("timeout") ||
+    msg.includes("abort") ||
+    msg.includes("etimedout") ||
+    msg.includes("econnreset") ||
+    msg.includes("fetch failed")
+  );
+}
+
 async function callGemini(text: string, s: AiSettings): Promise<string> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     s.model || "gemini-2.0-flash"
   )}:generateContent?key=${encodeURIComponent(s.apiKey)}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: [{ role: "user", parts: [{ text }] }],
-      generationConfig: { responseMimeType: "application/json", temperature: 0 },
-    }),
-  });
-  if (!res.ok) throw new Error(`Gemini ${res.status}: ${await safeText(res)}`);
-  const data = await res.json();
-  const parts = data?.candidates?.[0]?.content?.parts;
-  const out = Array.isArray(parts) ? parts.map((p: { text?: string }) => p.text || "").join("") : "";
-  if (!out) throw new Error("Gemini returned no content.");
-  return out;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [{ role: "user", parts: [{ text }] }],
+        generationConfig: { responseMimeType: "application/json", temperature: 0 },
+      }),
+    });
+    if (!res.ok) {
+      const errBody = await safeText(res);
+      const err = new Error(`Gemini ${res.status}: ${errBody}`);
+      (err as { status?: number }).status = res.status;
+      throw err;
+    }
+    const data = await res.json();
+    const parts = data?.candidates?.[0]?.content?.parts;
+    const out = Array.isArray(parts) ? parts.map((p: { text?: string }) => p.text || "").join("") : "";
+    if (!out) throw new Error("Gemini returned no content.");
+    return out;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function callOpenAI(text: string, s: AiSettings): Promise<string> {
   const base = (s.provider === "custom" && s.baseUrl ? s.baseUrl : "https://api.openai.com/v1").replace(/\/$/, "");
-  const res = await fetch(`${base}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${s.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: s.model || "gpt-4o-mini",
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: text },
-      ],
-    }),
-  });
-  if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await safeText(res)}`);
-  const data = await res.json();
-  const out = data?.choices?.[0]?.message?.content;
-  if (!out) throw new Error("OpenAI returned no content.");
-  return out;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const res = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${s.apiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: s.model || "gpt-4o-mini",
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: text },
+        ],
+      }),
+    });
+    if (!res.ok) {
+      const errBody = await safeText(res);
+      const err = new Error(`OpenAI ${res.status}: ${errBody}`);
+      (err as { status?: number }).status = res.status;
+      throw err;
+    }
+    const data = await res.json();
+    const out = data?.choices?.[0]?.message?.content;
+    if (!out) throw new Error("OpenAI returned no content.");
+    return out;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function safeText(res: Response): Promise<string> {
@@ -303,13 +371,101 @@ function extractJson(raw: string): unknown {
   }
 }
 
+async function fetchWithRetry(
+  text: string,
+  settings: AiSettings,
+  onStatus?: (msg: string) => void
+): Promise<string> {
+  const delays = [2000, 5000, 10000];
+  const primarySettings = { ...settings };
+  let fallbackSettings: AiSettings | null = null;
+
+  if (settings.provider === "gemini") {
+    const fallbackModel =
+      settings.model === "gemini-1.5-flash" ? "gemini-2.0-flash" : "gemini-1.5-flash";
+    fallbackSettings = { ...settings, model: fallbackModel };
+  } else if (settings.provider === "openai") {
+    const fallbackModel = settings.model === "gpt-4o" ? "gpt-4o-mini" : "gpt-4o";
+    fallbackSettings = { ...settings, model: fallbackModel };
+  }
+
+  const callProvider = (s: AiSettings) =>
+    s.provider === "gemini" ? callGemini(text, s) : callOpenAI(text, s);
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await callProvider(primarySettings);
+    } catch (err) {
+      lastError = err;
+      if (attempt < delays.length && isRetryableError(err)) {
+        onStatus?.("Retrying lookup...");
+        await sleep(delays[attempt]);
+        continue;
+      }
+      break;
+    }
+  }
+
+  if (fallbackSettings) {
+    onStatus?.("Retrying lookup...");
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      try {
+        return await callProvider(fallbackSettings);
+      } catch (err) {
+        lastError = err;
+        if (attempt < delays.length && isRetryableError(err)) {
+          onStatus?.("Retrying lookup...");
+          await sleep(delays[attempt]);
+          continue;
+        }
+        break;
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError || "AI extraction failed."));
+}
+
 /** Send text to the configured AI provider and return structured flights. */
-export async function extractFlightsWithAI(text: string, settings: AiSettings): Promise<RawFlight[]> {
+export async function extractFlightsWithAI(
+  text: string,
+  settings: AiSettings,
+  onStatus?: (status: string) => void
+): Promise<RawFlight[]> {
   if (!settings.apiKey) throw new Error("No API key configured.");
-  const content =
-    settings.provider === "gemini" ? await callGemini(text, settings) : await callOpenAI(text, settings);
+  const content = await fetchWithRetry(text, settings, onStatus);
   const json = extractJson(content) as { flights?: AiFlightJson[] };
   const flights = toRawFlights(json);
   if (flights.length === 0) throw new Error("The AI did not find any flights in that text.");
   return flights;
+}
+
+/**
+ * Determines whether the AI assist step should automatically run
+ * when "Enable AI Assist" is active.
+ *
+ * Conditions:
+ * 1. Any segment has equip "---" (equipment lookup failed / missing)
+ * 2. Segment has star flag (*) and text doesn't name an operator
+ * 3. Airline + class letter pair is not confirmed or learned
+ * 4. Parser held back segments due to incomplete data
+ */
+export function shouldAutoRunAi(res: ConverterResult): boolean {
+  if (res.segments.length === 0) return false;
+  if (res.failedEquipmentFlights && res.failedEquipmentFlights.length > 0) return true;
+  if (res.failedOperatorFlights && res.failedOperatorFlights.length > 0) return true;
+  if (res.unknownClassQuestions && res.unknownClassQuestions.length > 0) return true;
+  if (res.segments.some((s: Segment) => s.equip === "---")) return true;
+  if (res.segments.some((s: Segment) => s.hasStarFlag && !s.operatedBy)) return true;
+  if (
+    res.issues.some(
+      (i: Issue) =>
+        i.text.toLowerCase().includes("held back") ||
+        i.text.toLowerCase().includes("incomplete")
+    )
+  ) {
+    return true;
+  }
+  return false;
 }

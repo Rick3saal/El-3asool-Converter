@@ -62,6 +62,10 @@ export default defineConfig(({ mode }) => {
     "";
 
   return {
+    server: {
+      host: "0.0.0.0",
+      allowedHosts: true,
+    },
     plugins: [react(), tailwindcss(), sharingMetaUrls(siteUrl), viteSingleFile()],
     resolve: {
       alias: {

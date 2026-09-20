@@ -27,6 +27,8 @@ export interface RawFlight {
   cabin?: Cabin;
   /** explicit booking class from source, e.g. "D" */
   bookingClass?: string;
+  /** whether the flight had a "*" codeshare flag in the source */
+  hasStarFlag?: boolean;
   /** Sabre equipment code, e.g. 789 */
   equip?: string;
   /** raw aircraft text as printed in the source (for self-learning) */
@@ -63,6 +65,7 @@ export interface Segment {
   elapsed: number;
   cabin: Cabin;
   bookingClass: string;
+  hasStarFlag?: boolean;
   operatedBy?: string;
   direction: Direction;
 }
@@ -74,6 +77,12 @@ export interface Issue {
   text: string;
 }
 
+export interface UnknownClassQuestion {
+  airline: string;
+  classLetter: string;
+  flightLabel: string;
+}
+
 export interface ConverterResult {
   itinerary: string; // main itinerary + <--additional-->
   outbound: string; // NN1 chains
@@ -82,5 +91,8 @@ export interface ConverterResult {
   segments: Segment[];
   issues: Issue[];
   hasOutput: boolean;
-  missingCabinFlights: string[]; // flights needing a cabin choice
+  missingCabinFlights: string[]; // flights with no class letter and no cabin
+  unknownClassQuestions: UnknownClassQuestion[]; // flights with a class letter not in confirmed/learned table
+  failedOperatorFlights: string[]; // flights with "*" flag where operator lookup failed
+  failedEquipmentFlights: string[]; // flights where equipment lookup failed ("---")
 }
