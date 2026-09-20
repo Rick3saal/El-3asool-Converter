@@ -178,7 +178,14 @@ function tokenize(text: string): { toks: Tok[]; opbyRanges: Array<[number, numbe
   while ((m = sabreDateRe.exec(text)) !== null) {
     const month = MONTHS[m[2].toLowerCase()];
     const day = parseInt(m[1], 10);
-    push({ kind: "DATE", start: m.index, end: m.index + m[0].length, month, day, raw: (m[1] + m[2]).toUpperCase() });
+    push({
+      kind: "DATE",
+      start: m.index,
+      end: m.index + m[0].length,
+      month,
+      day,
+      raw: (m[1].padStart(2, "0") + m[2]).toUpperCase(),
+    });
   }
   const numDateRe = /\b(\d{1,2})[/.](\d{1,2})[/.](\d{2,4})\b/g;
   while ((m = numDateRe.exec(text)) !== null) {

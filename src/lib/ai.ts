@@ -13,6 +13,7 @@ import type { Cabin, ConverterResult, Issue, ParsedDate, RawFlight, Segment } fr
 import { timeToMinutes } from "./aiTime";
 import { findAircraftTokens, parseExplicitAircraftString } from "./aircraft";
 import { inferRouteEquipment, lookupKnownFlight } from "./knownFlights";
+import { lookupCabinForClass } from "./cabinClasses";
 
 export type AiProvider = "gemini" | "openai" | "custom";
 
@@ -82,6 +83,13 @@ Rules:
 - arrivalDayOffset: 0 same day, 1 next day (+1), 2 two days later.
 - cabin is one of FIRST, BUSINESS, PREMIUM, ECONOMY. bookingClass is the single
   letter if the source states one (e.g. "Business (P)" -> "P"), else "".
+  CRITICAL: Map booking class letter to the airline's specific fare bucket:
+  - British Airways (BA): T, W, E, Z = PREMIUM (World Traveller Plus); J, C, D, R, I = BUSINESS (Club World); F, A = FIRST; Y, B, H, K, M, L, V, S, N, Q, O, G = ECONOMY.
+  - Air France (AF): W, A, S = PREMIUM; J, C, D, I, Z = BUSINESS; P, F = FIRST; Y, B, M, U, K, H, L, Q, T, N, R, V, X, G = ECONOMY.
+  - Delta (DL): W, S = PREMIUM; J, C, D, I, Z = BUSINESS; F, P, A, G = FIRST; Y, B, M, H, Q, K, L, U, T, X, V, E = ECONOMY.
+  - United (UA): O, A, R = PREMIUM; J, C, D, Z, P = BUSINESS; Y, B, M, E, U, H, Q, V, W, S, T, L, K, G, N = ECONOMY.
+  - American (AA): W, P = PREMIUM; J, C, D, R, I = BUSINESS; F, A = FIRST; Y, H, K, M, L, V, G, S, N, Q, O = ECONOMY.
+  - Lufthansa (LH): G, E, N, R = PREMIUM; J, C, D, Z, P = BUSINESS; F, A = FIRST; Y, B, M, U, H, X, Q, V, W, S, T, L, K = ECONOMY.
 - operatedBy: the operator name if the source states "Operated by X" or codeshare info.
   IF THE OPERATOR IS NOT STATED in the source for a codeshare or flight with '*' flag,
   USE ONLINE LOOKUP (Google Search / flight status) to determine the actual operating carrier (e.g. Air Canada, Lufthansa, Air France, IndiGo, Horizon Air).
@@ -178,13 +186,13 @@ function parseDateField(d: AiFlightJson["date"]): ParsedDate | null {
     if (day >= 1 && day <= 31 && month >= 1 && month <= 12) return { day, month };
     return null;
   }
-  // strings like "02MAR", "9NOV", "Nov 9", "11/09", "2025-11-09"
+  // strings like "02MAR", "3MAY", "9NOV", "Nov 9", "11/09", "2025-11-09"
   const s = String(d).trim();
   let m = /^(\d{1,2})\s*([A-Za-z]{3,})/.exec(s);
   if (m) {
     const mo = MONTHS_ABBR[m[2].slice(0, 3).toLowerCase()];
     if (mo) {
-      const raw = m[1].length === 2 ? `${m[1]}${m[2].slice(0, 3).toUpperCase()}` : undefined;
+      const raw = `${m[1].padStart(2, "0")}${m[2].slice(0, 3).toUpperCase()}`;
       return { day: parseInt(m[1], 10), month: mo, raw };
     }
   }
@@ -268,7 +276,9 @@ export function toRawFlights(json: { flights?: AiFlightJson[] }): RawFlight[] {
       dep: dep ?? undefined,
       arr: arr2 ?? undefined,
       arrDay: off === 1 || off === 2 ? (off as 1 | 2) : 0,
-      cabin: normCabin(j.cabin),
+      cabin: normCabin(j.cabin) || (j.bookingClass && /^[A-Z]$/i.test(j.bookingClass)
+        ? lookupCabinForClass(airline, j.bookingClass.toUpperCase())
+        : undefined),
       bookingClass: j.bookingClass && /^[A-Z]$/i.test(j.bookingClass) ? j.bookingClass.toUpperCase() : undefined,
       equip,
       equipRaw: acPhrase || undefined,

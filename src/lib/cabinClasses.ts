@@ -13,6 +13,32 @@
 import type { Cabin } from "./types";
 
 export const CONFIRMED_CABIN_CLASSES: Record<string, Record<string, Cabin>> = {
+  // British Airways confirmed booking classes (T, W, E, Z = World Traveller Plus / Premium Economy)
+  BA: {
+    F: "FIRST",
+    A: "FIRST",
+    J: "BUSINESS",
+    C: "BUSINESS",
+    D: "BUSINESS",
+    R: "BUSINESS",
+    I: "BUSINESS",
+    W: "PREMIUM",
+    E: "PREMIUM",
+    T: "PREMIUM",
+    Z: "PREMIUM",
+    Y: "ECONOMY",
+    B: "ECONOMY",
+    H: "ECONOMY",
+    K: "ECONOMY",
+    M: "ECONOMY",
+    L: "ECONOMY",
+    V: "ECONOMY",
+    S: "ECONOMY",
+    N: "ECONOMY",
+    Q: "ECONOMY",
+    O: "ECONOMY",
+    G: "ECONOMY",
+  },
   // Air France confirmed booking classes (Z is omitted so the user is asked)
   AF: {
     P: "FIRST",

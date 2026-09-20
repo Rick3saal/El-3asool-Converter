@@ -44,6 +44,39 @@ export const KNOWN_FLIGHTS: KnownFlight[] = [
     operator: "HORIZON AIR",
     equip: "E75",
   },
+  // British Airways long-haul flights
+  {
+    airline: "BA",
+    flightNumber: "43",
+    origin: "LHR",
+    dest: "CPT",
+    operator: "BRITISH AIRWAYS",
+    equip: "788",
+  },
+  {
+    airline: "BA",
+    flightNumber: "043",
+    origin: "LHR",
+    dest: "CPT",
+    operator: "BRITISH AIRWAYS",
+    equip: "788",
+  },
+  {
+    airline: "BA",
+    flightNumber: "56",
+    origin: "JNB",
+    dest: "LHR",
+    operator: "BRITISH AIRWAYS",
+    equip: "388",
+  },
+  {
+    airline: "BA",
+    flightNumber: "056",
+    origin: "JNB",
+    dest: "LHR",
+    operator: "BRITISH AIRWAYS",
+    equip: "388",
+  },
   // Delta / Air France codeshare (LAX-CDG is Boeing 777-300ER = 77W)
   {
     airline: "DL",
@@ -111,6 +144,23 @@ export function inferRouteEquipment(
   const al = (airline || "").toUpperCase();
   const orig = (origin || "").toUpperCase();
   const dst = (dest || "").toUpperCase();
+
+  // British Airways routes:
+  // LHR-CPT is Boeing 787-8 (788)
+  if (
+    (op.includes("BRITISH") || al === "BA") &&
+    ((orig === "LHR" && dst === "CPT") || (orig === "CPT" && dst === "LHR"))
+  ) {
+    return "788";
+  }
+
+  // JNB-LHR is Airbus A380-800 (388)
+  if (
+    (op.includes("BRITISH") || al === "BA") &&
+    ((orig === "JNB" && dst === "LHR") || (orig === "LHR" && dst === "JNB"))
+  ) {
+    return "388";
+  }
 
   // Transatlantic between California (LAX/SFO) and Paris (CDG):
   // Air France operates Boeing 777-300ER (77W) or Airbus A350-900 (350)

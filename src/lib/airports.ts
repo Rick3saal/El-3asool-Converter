@@ -81,9 +81,22 @@ const TZ: Record<string, number> = {
   AKL: 720, WLG: 720, CHC: 720, NAN: 720,
 };
 
-export function tzOffsetMinutes(code: string): number | null {
+export function tzOffsetMinutes(code: string, month?: number): number | null {
   const c = code.toUpperCase();
-  return TZ[c] ?? null;
+  const base = TZ[c] ?? null;
+  if (base === null) return null;
+
+  // Daylight Saving Time for UK (BST = UTC+60 between April and October)
+  if (
+    month !== undefined &&
+    month >= 4 &&
+    month <= 10 &&
+    (c === "LHR" || c === "LGW" || c === "STN" || c === "LTN" || c === "MAN" || c === "EDI" || c === "GLA" || c === "BHX")
+  ) {
+    return base + 60;
+  }
+
+  return base;
 }
 
 /** Estimate block/elapsed time in minutes from local clock times + timezones. */
@@ -91,10 +104,11 @@ export function estimateElapsed(
   origin: string,
   dest: string,
   depMin: number,
-  arrMin: number
+  arrMin: number,
+  month?: number
 ): { minutes: number; confident: boolean } {
-  const tzo = tzOffsetMinutes(origin);
-  const tzd = tzOffsetMinutes(dest);
+  const tzo = tzOffsetMinutes(origin, month);
+  const tzd = tzOffsetMinutes(dest, month);
   if (tzo !== null && tzd !== null) {
     // convert both to UTC, then wrap to (0, 1440]
     let diff = (arrMin - tzd) - (depMin - tzo);

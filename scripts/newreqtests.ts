@@ -216,4 +216,22 @@ assert(Boolean(rUa.segments[3].operatedBy?.includes("LUFTHANSA")), "UA 8845 oper
 assert(rUa.segments[3].equip === "748", "UA 8845 equip resolved");
 assert(!rUa.itinerary.includes("---"), "All equipment resolved without ---");
 
+const baText = `1   BA  043   T 3MAY   LHR CPT   910P 950A¥1
+2   BA  056   T 16MAY  JNB LHR   725P 535A¥1`;
+const rBa = convert(baText, null);
+assert(rBa.segments.length === 2, "BA segments parsed");
+assert(rBa.segments[0].cabin === "PREMIUM", "BA 043 class T is PREMIUM");
+assert(rBa.segments[0].equip === "788", "BA 043 equip is 788");
+assert(rBa.segments[0].elapsed === 700, "BA 043 elapsed is 11.40 (700 min)");
+assert(rBa.segments[1].cabin === "PREMIUM", "BA 056 class T is PREMIUM");
+assert(rBa.segments[1].equip === "388", "BA 056 equip is 388");
+assert(rBa.segments[1].elapsed === 670, "BA 056 elapsed is 11.10 (670 min)");
+assert(rBa.itinerary.includes("1 BA 043 03MAY LHR CPT 910P 950A¥1 788 11.40 0 N  CABIN-PREMIUM"), "BA 043 itinerary line matches");
+assert(rBa.itinerary.includes("2 BA 056 16MAY JNB LHR 725P 535A¥1 388 11.10 0 N  CABIN-PREMIUM"), "BA 056 itinerary line matches");
+assert(rBa.outbound === "0BA043T03MAYLHRCPTNN1", "BA outbound NN1 matches");
+assert(rBa.inbound === "0BA056T16MAYJNBLHRNN1", "BA inbound NN1 matches");
+assert(rBa.individual.includes("0BA043T03MAYLHRCPTGK1"), "BA 043 GK1 matches");
+assert(rBa.individual.includes("0BA056T16MAYJNBLHRGK1"), "BA 056 GK1 matches");
+assert(!rBa.itinerary.includes("OPERATED BY"), "No operated by line for British Airways");
+
 console.log("ALL REQUIREMENTS VERIFIED SUCCESSFULLY!");

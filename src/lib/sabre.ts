@@ -191,9 +191,16 @@ export function validateOutput(segments: Segment[], out: Segment[], inn: Segment
 }
 
 /** estimate elapsed when the source gave none */
-export function resolveElapsed(origin: string, dest: string, dep: number, arr: number, explicit?: number): { minutes: number; confident: boolean } {
+export function resolveElapsed(
+  origin: string,
+  dest: string,
+  dep: number,
+  arr: number,
+  explicit?: number,
+  month?: number
+): { minutes: number; confident: boolean } {
   if (explicit !== undefined) return { minutes: explicit, confident: true };
-  return estimateElapsed(origin, dest, dep, arr);
+  return estimateElapsed(origin, dest, dep, arr, month);
 }
 
 export type { Segment, Cabin, Direction };

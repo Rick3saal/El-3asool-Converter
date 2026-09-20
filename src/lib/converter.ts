@@ -189,7 +189,7 @@ export function convertFlights(
       });
     }
 
-    const elapsed = resolveElapsed(f.origin!, f.dest!, f.dep!, f.arr!, f.elapsed);
+    const elapsed = resolveElapsed(f.origin!, f.dest!, f.dep!, f.arr!, f.elapsed, f.date?.month);
     // Note: "duration not stated in the source" warning removed per requirement 6
 
     segments.push({
