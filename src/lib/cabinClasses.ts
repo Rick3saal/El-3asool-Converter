@@ -8,13 +8,15 @@
  *
  * Priority in the converter:
  *   1. cabin word printed in the source ("Business", "First", …)
- *   2. this letter → cabin map (deterministic, offline)
- *   3. the user's manual fallback cabin choice
+ *   2. this letter → cabin map (deterministic, offline), incl. equip-scoped rows
+ *   3. learned carrier+flight knowledge from the user's own corrections
+ *   4. the user's manual fallback cabin choice
  *
  * Letters that are ambiguous or airline-dependent are deliberately NOT mapped:
  * an unknown letter falls through to the manual choice instead of guessing
  * the wrong cabin. The maps below only contain letters that are documented,
- * stable and well-attested for each carrier.
+ * stable and well-attested for each carrier, plus rows explicitly approved by
+ * the owner of this tool (marked "approved").
  */
 import type { Cabin } from "./types";
 
@@ -225,13 +227,44 @@ const CX: LetterMap = {
   E: "ECONOMY",
 };
 
-/** Air Canada (P/Z/N/A are Premium Economy) */
+/** Alaska Airlines (approved: D=FIRST, I/J FIRST on 737/E75; I on 787-9 is
+ *  BUSINESS — see the equip-scoped rows below) */
+const AS: LetterMap = {
+  D: "FIRST",
+  I: "FIRST",
+  J: "FIRST",
+};
+
+/** American Airlines (approved rows) */
+const AA: LetterMap = {
+  F: "FIRST",
+  A: "FIRST",
+  J: "BUSINESS",
+  C: "BUSINESS",
+  D: "BUSINESS",
+  R: "BUSINESS",
+  I: "BUSINESS",
+  P: "PREMIUM",
+  W: "PREMIUM",
+  B: "ECONOMY",
+  Y: "ECONOMY",
+};
+
+/** Delta Air Lines (approved rows: P/A/G = Premium Select) */
+const DL: LetterMap = {
+  P: "PREMIUM",
+  A: "PREMIUM",
+  G: "PREMIUM",
+};
+
+/** Air Canada (approved: P = BUSINESS on AC — overrides the industry default;
+ *  Z/N/A are Premium Economy) */
 const AC: LetterMap = {
   F: "FIRST",
   J: "BUSINESS",
   C: "BUSINESS",
   D: "BUSINESS",
-  P: "PREMIUM",
+  P: "BUSINESS",
   Z: "PREMIUM",
   N: "PREMIUM",
   A: "PREMIUM",
@@ -291,7 +324,17 @@ const AIRLINE_MAPS: Record<string, LetterMap> = {
   AC,
   JL,
   NH: JL,
+  AS,
+  AA,
+  DL,
 };
+
+/** Equipment-scoped overrides, checked BEFORE the normal map row when the
+ *  segment's equipment is known (approved: AS "I" is BUSINESS on the 787-9
+ *  but FIRST on 737/E75 metal). Families are Sabre equipment codes. */
+const SCOPED_ROWS: Array<{ airline: string; letter: string; cabin: Cabin; families: string[] }> = [
+  { airline: "AS", letter: "I", cabin: "BUSINESS", families: ["789"] },
+];
 
 /**
  * Letters that are (nearly) universal across the industry and safe to apply
@@ -306,13 +349,24 @@ const GENERIC: LetterMap = {
 
 /**
  * Resolve a booking-class letter to a cabin for the given marketing carrier.
+ * `equip` (Sabre equipment code, when known) refines equip-scoped rows first.
  * Returns null when the letter is unknown/ambiguous — callers must NOT guess
  * in that case (the user chooses the cabin manually instead).
  */
-export function cabinFromBookingClass(airline: string, cls: string | undefined | null): Cabin | null {
+export function cabinFromBookingClass(
+  airline: string,
+  cls: string | undefined | null,
+  equip?: string
+): Cabin | null {
   if (!cls) return null;
   const letter = String(cls).trim().toUpperCase();
   if (!/^[A-Z]$/.test(letter)) return null;
   const al = (airline || "").toUpperCase();
+  if (equip) {
+    const scoped = SCOPED_ROWS.find(
+      (r) => r.airline === al && r.letter === letter && r.families.includes(equip)
+    );
+    if (scoped) return scoped.cabin;
+  }
   return (AIRLINE_MAPS[al] && AIRLINE_MAPS[al][letter]) || GENERIC[letter] || null;
 }

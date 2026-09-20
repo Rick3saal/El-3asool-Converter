@@ -3,7 +3,7 @@
 export type Cabin = "FIRST" | "BUSINESS" | "PREMIUM" | "ECONOMY";
 
 export interface ParsedDate {
-  day: number; // 1-31, never zero-padded on output
+  day: number; // 1-31; always zero-padded on output (01OCT)
   month: number; // 1-12
   year?: number;
 }
@@ -15,6 +15,9 @@ export interface RawFlight {
   airline: string;
   /** Raw flight number digits as found, e.g. "85" */
   number: string;
+  /** Style A marketing-flight flag: the "*" in "AS*119" — the spec requires looking
+   *  up the real operating carrier for this segment. */
+  starred?: boolean;
   origin?: string;
   dest?: string;
   date?: ParsedDate;
@@ -49,7 +52,8 @@ export interface RawFlight {
 /** A fully resolved, sellable Sabre segment */
 export interface Segment {
   airline: string;
-  /** flight number as displayed (2-digit numbers padded to 3) */
+  /** flight number as displayed (BA 2-digit padded to 3, e.g. BA 085; the
+   *  main itinerary additionally right-aligns it in a 4-char field) */
   num: string;
   date: ParsedDate;
   origin: string;
@@ -77,7 +81,8 @@ export interface UnresolvedCabinFlight {
   airline: string;
   /** raw flight number digits as found, e.g. "22" */
   number: string;
-  /** flight number as displayed (2-digit numbers padded to 3) */
+  /** flight number as displayed (BA 2-digit padded to 3, e.g. BA 085; the
+   *  main itinerary additionally right-aligns it in a 4-char field) */
   num: string;
   origin: string;
   dest: string;

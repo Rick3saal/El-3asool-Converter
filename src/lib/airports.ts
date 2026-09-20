@@ -84,20 +84,156 @@ export function tzOffsetMinutes(code: string): number | null {
   return TZ[c] ?? null;
 }
 
-/** Estimate block/elapsed time in minutes from local clock times + timezones. */
+/** US federal daylight-saving dates for real years (2nd Sunday of March ->
+ *  1st Sunday of November, applied from/to the specified date). When a year is
+ *  not in the table, estimate elapsed time from standard-time offsets only. */
+const US_DST: Record<number, { start: string; end: string }> = {
+  2024: { start: "03-10", end: "11-03" },
+  2025: { start: "03-09", end: "11-02" },
+  2026: { start: "03-08", end: "11-01" },
+  2027: { start: "03-14", end: "11-07" },
+  2028: { start: "03-12", end: "11-05" },
+  2029: { start: "03-11", end: "11-04" },
+  2030: { start: "03-10", end: "11-03" },
+};
+
+/** Airports on the contiguous US / Pacific US DST schedule. */
+const US_DST_AIRPORTS = new Set([
+  "LAX", "SFO", "SEA", "PDX", "SAN", "LAS", "BUR", "ONT", "SNA", "LGB",
+  "FAT", "RNO", "GEG", "JFK", "EWR", "LGA", "CLT", "ORD", "MDW", "MIA",
+  "FLL", "ATL", "BOS", "IAH", "DFW", "AUS", "MSP", "DTW", "PHL", "DCA",
+  "IAD", "BWI", "MCO", "TPA", "RDU", "BNA", "STL", "MCI", "IND", "CMH",
+  "CLE", "CVG", "PIT", "MKE", "SMF", "OAK", "SJC", "MSY", "SAT", "ABQ",
+  "OMA", "OKC", "TUL", "MEM", "JAX", "PBI", "RSW", "BUF", "ROC", "GSO",
+  "CHS", "SAV", "BDL", "PVD", "PWM", "ALB", "MHT", "ORF", "RIC", "SYR",
+  "GSP", "AVL", "MYR", "ILM", "TYS", "LEX", "SDF", "DAY", "TOL", "GRR",
+  "FWA", "SBN", "PIA", "SPI", "CID", "DSM", "MSN", "GRB", "DLH", "FAR",
+  "FSD", "ELP", "LBB", "AMA", "MAF", "CRP", "HRL", "BRO", "LRD", "GRK",
+  "SHV", "LFT", "BTR", "MOB", "MGM", "HSV", "BHM", "TRI", "CHA", "AGS",
+  "CAE", "FAY", "EWN", "PHF", "ROA", "CRW", "HTS", "CKB", "ERI", "AVP",
+  "ABE", "BGM", "ELM", "ITH", "PBG", "MSS", "OGS", "ART", "RME", "IAG",
+]);
+
+/** Canadian provinces that follow the US DST schedule. */
+const CA_DST_AIRPORTS = new Set([
+  "YVR", "YYZ", "YUL", "YOW", "YYC", "YEG", "YHZ", "YWG", "YQB", "YYT",
+  "YQT", "YSJ", "YFC", "YQM", "YDF", "YXX", "YLW", "YXS",
+]);
+
+/** Europe (EU/UK): DST runs last Sunday of March -> last Sunday of October. */
+const EU_DST_AIRPORTS = new Set([
+  "LHR", "LGW", "STN", "LTN", "MAN", "EDI", "GLA", "BHX", "BRS", "NCL",
+  "DUB", "SNN", "CDG", "ORY", "NCE", "LYS", "MRS", "TLS", "BOD", "NTE",
+  "LIL", "FRA", "MUC", "BER", "HAM", "DUS", "CGN", "STR", "HAJ", "NUE",
+  "LEJ", "AMS", "BRU", "ZRH", "GVA", "BSL", "VIE", "SZG", "MAD", "BCN",
+  "AGP", "PMI", "VLC", "SVQ", "LIS", "OPO", "FAO", "FCO", "MXP", "LIN",
+  "VCE", "NAP", "BGY", "PSA", "CTA", "CPH", "OSL", "ARN", "WAW", "KRK",
+  "GDN", "PRG", "BUD", "BEG", "ZAG", "LJU", "OTP", "VNO", "RIX", "TLL",
+  "TGD", "SKP", "TIA",
+]);
+
+// Regions whose DST dates aren't solidly established here — don't guess.
+const SouthernHemisphereDST = new Set<string>(); // none: no guessing per spec
+
+/** Daylight UTC offset in minutes for `code` on the given date.
+ *  Returns null when the airport either doesn't observe DST or its DST dates
+ *  are not confidently known — meaning "use the standard offset". */
+function dstActiveOffset(
+  code: string,
+  month: number,
+  day: number,
+  year?: number
+): number | null {
+  if (!year) return null; // no year: do not guess DST (TI table handles 1OCT with no explicit year too)
+  const md = `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const usDates = US_DST[year];
+  if (!usDates) return null;
+  void SouthernHemisphereDST;
+  if (SouthernHemisphereDST.has(code)) return null;
+  if (US_DST_AIRPORTS.has(code) || CA_DST_AIRPORTS.has(code)) {
+    const inDst = md >= usDates.start && md < usDates.end;
+    if (inDst) return (TZ[code] ?? 0) + 60;
+    return null;
+  }
+  if (EU_DST_AIRPORTS.has(code)) {
+    // EU/UK rule: last Sunday Mar 00:59 UTC -> last Sunday Oct 01:59 UTC.
+    // As dates, approximate by 25..31 March / 25..31 October lookups.
+    if (month >= 4 && month <= 9) return (TZ[code] ?? 0) + 60;
+    if (month === 3) {
+      const lsm = lastSundayOfMonth(year, 2);
+      return day >= lsm ? (TZ[code] ?? 0) + 60 : null;
+    }
+    if (month === 10) {
+      const lso = lastSundayOfMonth(year, 9);
+      return day < lso ? (TZ[code] ?? 0) + 60 : null;
+    }
+    return null;
+  }
+  return null;
+}
+
+function lastSundayOfMonth(year: number, month0: number): number {
+  // day-of-week of the last day; walk backwards to Sunday
+  const last = new Date(Date.UTC(year, month0 + 1, 0));
+  const dow = last.getUTCDay();
+  return last.getUTCDate() - dow;
+}
+
+/** Date-aware UTC offset (standard + DST when actively known). */
+export function tzOffsetMinutesOnDate(
+  code: string,
+  month?: number,
+  day?: number,
+  year?: number
+): number | null {
+  const std = tzOffsetMinutes(code);
+  if (std === null) return null;
+  if (month === undefined || day === undefined) {
+    // The itinerary always travels with a month+day, but a bare sample may not.
+    // Keep the standard offset rather than assume DST.
+    return std;
+  }
+  const dstOff = dstActiveOffset(code.toUpperCase(), month, day, year);
+  if (dstOff !== null) return dstOff;
+  if (!year) {
+    /* No explicit year: US DST 2nd Sun Mar (8th–14th) -> 1st Sun Nov
+     * (1st–7th), EU/UK last Sun Mar (25th–31st) -> last Sun Oct (25th–31st).
+     * Only apply DST for dates that are inside the window in EVERY possible
+     * year — never guess inside the ambiguous weeks. */
+    const c = code.toUpperCase();
+    if (US_DST_AIRPORTS.has(c) || CA_DST_AIRPORTS.has(c)) {
+      // unambiguously inside: Mar 15 .. Oct 31
+      if (month >= 4 && month <= 10) return std + 60;
+      if (month === 3 && day >= 15) return std + 60;
+    }
+    if (EU_DST_AIRPORTS.has(c)) {
+      // unambiguously inside: Apr 1 .. Oct 24
+      if (month >= 4 && month <= 9) return std + 60;
+      if (month === 10 && day <= 24) return std + 60;
+    }
+  }
+  return std;
+}
+
+/** Estimate block/elapsed time in minutes from local clock times + timezones.
+ *  When the flight date is known, DST is applied for US/Canada/Europe
+ *  airports (e.g. SEA/LAX/YVR are UTC-7 on October dates; ICN always UTC+9). */
 export function estimateElapsed(
   origin: string,
   dest: string,
   depMin: number,
-  arrMin: number
+  arrMin: number,
+  date?: { month: number; day: number; year?: number }
 ): { minutes: number; confident: boolean } {
-  const tzo = tzOffsetMinutes(origin);
-  const tzd = tzOffsetMinutes(dest);
+  const tzo = tzOffsetMinutesOnDate(origin, date?.month, date?.day, date?.year);
+  const tzd = tzOffsetMinutesOnDate(dest, date?.month, date?.day, date?.year);
   if (tzo !== null && tzd !== null) {
-    // convert both to UTC, then wrap to (0, 1440]
+    // convert both to UTC, then wrap into (0, 1440]. Date-line crossings are
+    // handled by the wrap itself — a ¥1/+1 marker only affects how the
+    // arrival day prints, never the duration.
     let diff = (arrMin - tzd) - (depMin - tzo);
     while (diff <= 0) diff += 1440;
-    while (diff > 1440) diff -= 1440;
+    while (diff > 2 * 1440) diff -= 1440;
     return { minutes: diff, confident: true };
   }
   let diff = arrMin - depMin;

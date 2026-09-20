@@ -55,7 +55,7 @@ npm run deploy:vercel   # = vercel build --prod && vercel deploy --prebuilt --pr
 
 ```bash
 npm ci
-npm run check   # typecheck + 209 parser assertions + production build
+npm run check   # typecheck + 264 parser assertions + production build
 ```
 
 ---
@@ -69,8 +69,8 @@ npm run build      # production build into dist/
 npm run preview    # serve the built dist/ locally
 ```
 
-Scripts: `dev`, `build`, `preview`, `typecheck`, `selftest` (53 parser cases),
-`selftest:extra` (156 regression cases), `cathaycheck` (end-to-end CX itinerary),
+Scripts: `dev`, `build`, `preview`, `typecheck`, `selftest` (83 parser cases, incl. Style A),
+`selftest:extra` (181 regression cases), `cathaycheck` (end-to-end CX itinerary),
 `check` (all of the above plus a production build) and `deploy:vercel`.
 
 The test suites run on the parser alone — no browser, no network — so they are safe to run
@@ -84,8 +84,10 @@ never take the deployment down.
 ```
 index.html            entry HTML (meta tags, fonts)
 src/App.tsx           the whole UI
-src/lib/parser.ts     deterministic itinerary parser
+src/lib/parser.ts     deterministic itinerary parser (Style A lines + Style B text blocks)
 src/lib/converter.ts  Sabre sell-entry / itinerary formatting
+src/lib/cabinClasses.ts airline-specific booking-class -> cabin table
+src/lib/knownFlights.ts built-in flight knowledge (equipment + real operator)
 src/lib/ai.ts         optional browser-side AI assist (Gemini / OpenAI / custom) + online aircraft lookup
 src/lib/cabinClasses.ts booking-class letter → cabin (per-airline maps)
 src/lib/ocr.ts        Tesseract.js OCR for screenshots
