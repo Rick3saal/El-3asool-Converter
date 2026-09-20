@@ -18,6 +18,7 @@ export interface KnownFlight {
 }
 
 export const KNOWN_FLIGHTS: KnownFlight[] = [
+  // Air France / IndiGo
   {
     airline: "AF",
     flightNumber: "6453",
@@ -34,6 +35,7 @@ export const KNOWN_FLIGHTS: KnownFlight[] = [
     operator: "INDIGO",
     equip: "320",
   },
+  // Alaska Airlines / Horizon Air
   {
     airline: "AS",
     flightNumber: "2010",
@@ -41,6 +43,49 @@ export const KNOWN_FLIGHTS: KnownFlight[] = [
     dest: "YVR",
     operator: "HORIZON AIR",
     equip: "E75",
+  },
+  // Delta / Air France codeshare
+  {
+    airline: "DL",
+    flightNumber: "8727",
+    origin: "LAX",
+    dest: "CDG",
+    operator: "AIR FRANCE",
+    equip: "777",
+  },
+  // United / Air Canada codeshares
+  {
+    airline: "UA",
+    flightNumber: "8466",
+    origin: "LAX",
+    dest: "YUL",
+    operator: "AIR CANADA",
+    equip: "223",
+  },
+  {
+    airline: "UA",
+    flightNumber: "8062",
+    origin: "YUL",
+    dest: "CDG",
+    operator: "AIR CANADA",
+    equip: "777",
+  },
+  // United / Lufthansa codeshares
+  {
+    airline: "UA",
+    flightNumber: "9516",
+    origin: "CDG",
+    dest: "FRA",
+    operator: "LUFTHANSA",
+    equip: "320",
+  },
+  {
+    airline: "UA",
+    flightNumber: "8845",
+    origin: "FRA",
+    dest: "LAX",
+    operator: "LUFTHANSA",
+    equip: "748",
   },
 ];
 

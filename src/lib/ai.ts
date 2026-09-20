@@ -38,6 +38,28 @@ export function defaultModelFor(provider: AiProvider): string {
   return "gemini-2.0-flash";
 }
 
+export function sanitizeModel(provider: AiProvider, model: string): string {
+  const m = (model || "").trim();
+  if (provider === "gemini") {
+    const valid = [
+      "gemini-2.5-flash",
+      "gemini-2.0-flash",
+      "gemini-1.5-flash",
+      "gemini-1.5-pro",
+      "gemini-2.0-pro-exp-02-05",
+    ];
+    if (valid.includes(m)) return m;
+    // Known user typos or invalid model names (e.g. "gemini-3.6-flash")
+    return "gemini-2.0-flash";
+  }
+  if (provider === "openai") {
+    const valid = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"];
+    if (valid.includes(m)) return m;
+    return "gpt-4o-mini";
+  }
+  return m || defaultModelFor(provider);
+}
+
 const SYSTEM_PROMPT = `You are a flight-itinerary extraction engine for a Sabre GDS converter.
 Read the ENTIRE text and return ONLY the real flights as JSON.
 
@@ -57,9 +79,10 @@ Rules:
 - arrivalDayOffset: 0 same day, 1 next day (+1), 2 two days later.
 - cabin is one of FIRST, BUSINESS, PREMIUM, ECONOMY. bookingClass is the single
   letter if the source states one (e.g. "Business (P)" -> "P"), else "".
-- operatedBy: the operator name exactly as printed if the source says
-  "Operated by X" (keep the whole name, e.g. "SKYWEST DBA UNITED EXPRESS"), or codeshare operator, else "".
-- hasStarFlag: true if the segment in the source has an asterisk '*' flag (e.g. "AF*3775"), else false.
+- operatedBy: the operator name if the source states "Operated by X" or codeshare info.
+  IF THE OPERATOR IS NOT STATED in the source for a codeshare or flight with '*' flag,
+  USE ONLINE LOOKUP (Google Search / flight status) to determine the actual operating carrier (e.g. Air Canada, Lufthansa, Air France, IndiGo, Horizon Air).
+- hasStarFlag: true if the segment in the source has an asterisk '*' flag (e.g. "AF*3775", "DL*8727", "UA*8466"), else false.
 - Preserve source order; it is usually outbound flights first, then the return.
 - Do NOT invent data. If a field is truly absent, use "" (or null).
 
@@ -68,9 +91,12 @@ Rules:
   "3h 0m" -> 180). NEVER use a layover/connection duration ("Layover in PHL
   (2h 0m)") — that belongs to the connection, not to any flight. If the flight
   itself shows no duration, use null.
-- aircraft: copy the aircraft text EXACTLY as printed (e.g. "Embraer ERJ-145",
-  "Airbus A321neo", "Boeing 737 MAX 9 Passenger"). Never leave it blank when
-  the source shows one.
+- aircraft: copy the aircraft text if printed in the source (e.g. "Embraer ERJ-145",
+  "Airbus A321neo", "Boeing 737 MAX 9 Passenger").
+  IF THE AIRCRAFT IS NOT STATED in the source (e.g. codeshares, schedules without equipment),
+  USE ONLINE LOOKUP (Google Search / flight status) to find the scheduled aircraft type
+  for that flight number and route (e.g. Boeing 777-300ER, Airbus A350-900, Airbus A220-300,
+  Boeing 787-9, Boeing 747-8, Airbus A320). Only leave "" if lookup yields no result.
 
 Return JSON of this exact shape:
 {"flights":[{
@@ -257,13 +283,15 @@ function sleep(ms: number): Promise<void> {
 function isRetryableError(err: unknown): boolean {
   if (!err) return false;
   const status = (err as { status?: number }).status;
-  if (status === 503 || status === 429 || status === 500 || status === 502 || status === 504) {
+  if (status === 503 || status === 429 || status === 500 || status === 502 || status === 504 || status === 404) {
     return true;
   }
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
   return (
     msg.includes("503") ||
     msg.includes("429") ||
+    msg.includes("404") ||
+    msg.includes("not found") ||
     msg.includes("unavailable") ||
     msg.includes("resource_exhausted") ||
     msg.includes("resource has been exhausted") ||
@@ -277,22 +305,50 @@ function isRetryableError(err: unknown): boolean {
 }
 
 async function callGemini(text: string, s: AiSettings): Promise<string> {
+  const modelName = sanitizeModel("gemini", s.model);
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    s.model || "gemini-2.0-flash"
+    modelName
   )}:generateContent?key=${encodeURIComponent(s.apiKey)}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 25000);
   try {
-    const res = await fetch(url, {
+    // 1. Primary attempt with Google Search grounding tool for live lookup of aircraft & operators
+    const searchBody = {
+      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: [{ role: "user", parts: [{ text }] }],
+      tools: [{ googleSearch: {} }],
+      generationConfig: { temperature: 0 },
+    };
+
+    let res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: controller.signal,
-      body: JSON.stringify({
+      body: JSON.stringify(searchBody),
+    });
+
+    // 2. Fallback to standard json mode if googleSearch tool is unsupported or returns 400/404
+    if (!res.ok && res.status !== 429 && res.status !== 503) {
+      const fallbackModel = res.status === 404 ? "gemini-2.0-flash" : modelName;
+      const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+        fallbackModel
+      )}:generateContent?key=${encodeURIComponent(s.apiKey)}`;
+      const jsonBody = {
         system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
         contents: [{ role: "user", parts: [{ text }] }],
         generationConfig: { responseMimeType: "application/json", temperature: 0 },
-      }),
-    });
+      };
+      const resFallback = await fetch(fallbackUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify(jsonBody),
+      });
+      if (resFallback.ok) {
+        res = resFallback;
+      }
+    }
+
     if (!res.ok) {
       const errBody = await safeText(res);
       const err = new Error(`Gemini ${res.status}: ${errBody}`);

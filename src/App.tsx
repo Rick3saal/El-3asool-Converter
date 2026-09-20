@@ -7,6 +7,7 @@ import {
   DEFAULT_AI_SETTINGS,
   defaultModelFor,
   extractFlightsWithAI,
+  sanitizeModel,
   shouldAutoRunAi,
   type AiProvider,
   type AiSettings,
@@ -117,7 +118,15 @@ const AI_LS_KEY = "el3asool.ai.settings.v1";
 function loadAiSettings(): AiSettings {
   try {
     const raw = localStorage.getItem(AI_LS_KEY);
-    if (raw) return { ...DEFAULT_AI_SETTINGS, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const provider: AiProvider = parsed.provider || "gemini";
+      return {
+        ...DEFAULT_AI_SETTINGS,
+        ...parsed,
+        model: sanitizeModel(provider, parsed.model),
+      };
+    }
   } catch {
     /* ignore */
   }
@@ -739,7 +748,12 @@ export default function App() {
 
   const showIssues = useMemo(() => {
     if (!liveResult) return [];
-    return liveResult.issues.filter((i) => i.level !== "info");
+    return liveResult.issues.filter(
+      (i) =>
+        i.level !== "info" &&
+        !i.text.toLowerCase().includes("equipment not found") &&
+        !i.text.toLowerCase().includes("operator not found")
+    );
   }, [liveResult]);
 
   const infoIssue = useMemo(() => {
@@ -836,6 +850,20 @@ export default function App() {
               >
                 🧭 AI Assist{ai.enabled && ai.apiKey ? " · on" : ""}
               </button>
+              {!ai.apiKey && (
+                <a
+                  href={
+                    ai.provider === "gemini"
+                      ? "https://aistudio.google.com/apikey"
+                      : "https://platform.openai.com/api-keys"
+                  }
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-lg border border-honey/40 bg-honey/15 px-3 py-1.5 text-xs font-bold text-amber-200 transition hover:bg-honey/25"
+                >
+                  Get API key ↗
+                </a>
+              )}
               <button
                 type="button"
                 onClick={readClipboardImage}
@@ -1005,15 +1033,53 @@ export default function App() {
                 </div>
                 <div>
                   <label className={labelCls}>Model</label>
-                  <input
-                    className={inputCls}
-                    value={ai.model}
-                    placeholder={defaultModelFor(ai.provider)}
-                    onChange={(e) => updateAi({ model: e.target.value })}
-                  />
+                  {ai.provider === "gemini" ? (
+                    <select
+                      className={inputCls}
+                      value={ai.model}
+                      onChange={(e) => updateAi({ model: e.target.value })}
+                    >
+                      <option value="gemini-2.5-flash">gemini-2.5-flash (Fast & recommended)</option>
+                      <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                      <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+                      <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+                    </select>
+                  ) : ai.provider === "openai" ? (
+                    <select
+                      className={inputCls}
+                      value={ai.model}
+                      onChange={(e) => updateAi({ model: e.target.value })}
+                    >
+                      <option value="gpt-4o-mini">gpt-4o-mini (Recommended)</option>
+                      <option value="gpt-4o">gpt-4o</option>
+                    </select>
+                  ) : (
+                    <input
+                      className={inputCls}
+                      value={ai.model}
+                      placeholder={defaultModelFor(ai.provider)}
+                      onChange={(e) => updateAi({ model: e.target.value })}
+                    />
+                  )}
                 </div>
                 <div className="sm:col-span-2">
-                  <label className={labelCls}>API key</label>
+                  <div className="flex items-center justify-between pb-1">
+                    <label className={labelCls}>API key</label>
+                    {(ai.provider === "gemini" || ai.provider === "openai") && (
+                      <a
+                        href={
+                          ai.provider === "gemini"
+                            ? "https://aistudio.google.com/apikey"
+                            : "https://platform.openai.com/api-keys"
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[11.5px] font-semibold text-honey hover:underline inline-flex items-center gap-1"
+                      >
+                        Get {ai.provider === "gemini" ? "Google Gemini" : "OpenAI"} key ↗
+                      </a>
+                    )}
+                  </div>
                   <input
                     type="password"
                     className={inputCls}

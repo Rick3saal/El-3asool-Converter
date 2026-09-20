@@ -130,6 +130,28 @@ function tokenize(text: string): { toks: Tok[]; opbyRanges: Array<[number, numbe
     }
   }
 
+  // GDS codeshare lines ending with &&: e.g. "AIR CANADA &&", "AIR FRANCE &&", "LUFTHANSA UTSCHE LUFTHANSA AG &&"
+  const gdsAmpRe = /(?:^|\n)\s*([A-Za-z\s/.-]+?)\s*&&\s*(?:\n|$)/g;
+  while ((m = gdsAmpRe.exec(text)) !== null) {
+    const rawOp = m[1].replace(/&&.*$/, "").trim();
+    const op = cleanOperator(rawOp);
+    if (op) {
+      opbyRanges.push([m.index, m.index + m[0].length]);
+      push({ kind: "OPBY", start: m.index, end: m.index + m[0].length, operator: op });
+    }
+  }
+
+  // GDS / Sabre explicit line: "*VTZ-BLR OPERATED BY INDIGO" or "OPERATED BY INDIGO"
+  const gdsOpLineRe = /(?:^|\n)\s*(?:\*[A-Z]{3}-[A-Z]{3}\s+)?OPERATED\s+BY\s+([A-Za-z\s/.-]+)(?:\n|$)/gi;
+  while ((m = gdsOpLineRe.exec(text)) !== null) {
+    const rawOp = m[1].trim();
+    const op = cleanOperator(rawOp);
+    if (op) {
+      opbyRanges.push([m.index, m.index + m[0].length]);
+      push({ kind: "OPBY", start: m.index, end: m.index + m[0].length, operator: op });
+    }
+  }
+
   /* dates: "Wed, Nov 4", "Nov 4, 2025", "4 Nov" */
   const dateRe = new RegExp(
     `(?<![A-Za-z0-9])(?:${WEEKDAY}[,.]?\\s+)?(${MON_NAME})[a-z]*\\.?[\\s,]+(\\d{1,2})(?:st|nd|rd|th)?(?:[\\s,]+(\\d{4}))?(?![0-9])`,

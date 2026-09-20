@@ -185,4 +185,34 @@ Economy (Y)`;
 const rNoDur = convert(noDurationText, null);
 assert(!rNoDur.issues.some((i) => i.text.toLowerCase().includes("duration not stated")), "Duration not stated warning never raised");
 
+console.log("=== Testing GDS Codeshare & Screenshot Scenarios ===");
+const dl8727Text = `1  DL*8727  Z 02MAR  LAX CDG  655P 250P¥1
+AIR FRANCE &&`;
+const rDl = convert(dl8727Text, null);
+assert(rDl.segments.length === 1, "DL 8727 parsed");
+assert(rDl.segments[0].operatedBy === "AIR FRANCE", "Operator resolved from AIR FRANCE && line");
+assert(rDl.segments[0].equip === "777", "Equipment resolved via known flights");
+assert(rDl.itinerary.includes("*LAX-CDG OPERATED BY AIR FRANCE"), "Emits operated-by line for Air France");
+assert(!rDl.itinerary.includes("---"), "Output does not contain --- equipment");
+
+const uaCodesharesText = `1  UA*8466  P 03MAR  LAX YUL  830A 443P
+AIR CANADA &&
+2  UA*8062  P 03MAR  YUL CDG  615P 720A¥1
+AIR CANADA &&
+3  UA*9516  P 18MAR  CDG FRA  640A 755A
+LUFTHANSA UTSCHE LUFTHANSA AG &&
+4  UA*8845  P 18MAR  FRA LAX  1025A 205P
+LUFTHANSA UTSCHE LUFTHANSA AG`;
+const rUa = convert(uaCodesharesText, null);
+assert(rUa.segments.length === 4, "All 4 UA codeshare flights parsed");
+assert(rUa.segments[0].operatedBy === "AIR CANADA", "UA 8466 operator is AIR CANADA");
+assert(rUa.segments[0].equip === "223", "UA 8466 equip resolved");
+assert(rUa.segments[1].operatedBy === "AIR CANADA", "UA 8062 operator is AIR CANADA");
+assert(rUa.segments[1].equip === "777", "UA 8062 equip resolved");
+assert(Boolean(rUa.segments[2].operatedBy?.includes("LUFTHANSA")), "UA 9516 operator is LUFTHANSA");
+assert(rUa.segments[2].equip === "320", "UA 9516 equip resolved");
+assert(Boolean(rUa.segments[3].operatedBy?.includes("LUFTHANSA")), "UA 8845 operator is LUFTHANSA");
+assert(rUa.segments[3].equip === "748", "UA 8845 equip resolved");
+assert(!rUa.itinerary.includes("---"), "All equipment resolved without ---");
+
 console.log("ALL REQUIREMENTS VERIFIED SUCCESSFULLY!");
