@@ -3,9 +3,10 @@
 export type Cabin = "FIRST" | "BUSINESS" | "PREMIUM" | "ECONOMY";
 
 export interface ParsedDate {
-  day: number; // 1-31; always zero-padded on output (01OCT)
+  day: number; // 1-31
   month: number; // 1-12
   year?: number;
+  raw?: string;
 }
 
 export type Direction = "OUT" | "IN";
@@ -15,9 +16,6 @@ export interface RawFlight {
   airline: string;
   /** Raw flight number digits as found, e.g. "85" */
   number: string;
-  /** Style A marketing-flight flag: the "*" in "AS*119" — the spec requires looking
-   *  up the real operating carrier for this segment. */
-  starred?: boolean;
   origin?: string;
   dest?: string;
   date?: ParsedDate;
@@ -30,6 +28,8 @@ export interface RawFlight {
   cabin?: Cabin;
   /** explicit booking class from source, e.g. "D" */
   bookingClass?: string;
+  /** whether the flight had a "*" codeshare flag in the source */
+  hasStarFlag?: boolean;
   /** Sabre equipment code, e.g. 789 */
   equip?: string;
   /** raw aircraft text as printed in the source (for self-learning) */
@@ -52,8 +52,7 @@ export interface RawFlight {
 /** A fully resolved, sellable Sabre segment */
 export interface Segment {
   airline: string;
-  /** flight number as displayed (BA 2-digit padded to 3, e.g. BA 085; the
-   *  main itinerary additionally right-aligns it in a 4-char field) */
+  /** flight number as displayed (2-digit numbers padded to 3) */
   num: string;
   date: ParsedDate;
   origin: string;
@@ -67,38 +66,9 @@ export interface Segment {
   elapsed: number;
   cabin: Cabin;
   bookingClass: string;
+  hasStarFlag?: boolean;
   operatedBy?: string;
   direction: Direction;
-  /** true when the booking-class letter was stated in the source (vs. defaulted from the cabin) */
-  classFromSource?: boolean;
-}
-
-/** A flight that could not be built because its cabin is unresolved: it carries
- *  a bare booking-class letter that no airline table maps and no fallback cabin
- *  was chosen. It is kept in full detail so the online enrichment pass (or the
- *  user) can resolve the letter and build the segment without re-parsing. */
-export interface UnresolvedCabinFlight {
-  airline: string;
-  /** raw flight number digits as found, e.g. "22" */
-  number: string;
-  /** flight number as displayed (BA 2-digit padded to 3, e.g. BA 085; the
-   *  main itinerary additionally right-aligns it in a 4-char field) */
-  num: string;
-  origin: string;
-  dest: string;
-  date: ParsedDate;
-  dep: number;
-  arr: number;
-  arrDay: 0 | 1 | 2;
-  equip: string;
-  equipRaw?: string;
-  elapsed: number;
-  operatedBy?: string;
-  direction: Direction;
-  /** bare booking-class letter from the source, e.g. "W" */
-  bookingClass: string;
-  /** index into the built segments array where this flight belongs */
-  insertAt: number;
 }
 
 export type IssueLevel = "error" | "warn" | "info";
@@ -106,6 +76,12 @@ export type IssueLevel = "error" | "warn" | "info";
 export interface Issue {
   level: IssueLevel;
   text: string;
+}
+
+export interface UnknownClassQuestion {
+  airline: string;
+  classLetter: string;
+  flightLabel: string;
 }
 
 export interface ConverterResult {
@@ -116,6 +92,8 @@ export interface ConverterResult {
   segments: Segment[];
   issues: Issue[];
   hasOutput: boolean;
-  missingCabinFlights: string[]; // flights needing a cabin choice
-  unresolvedCabins: UnresolvedCabinFlight[]; // bare-class flights awaiting resolution
+  missingCabinFlights: string[]; // flights with no class letter and no cabin
+  unknownClassQuestions: UnknownClassQuestion[]; // flights with a class letter not in confirmed/learned table
+  failedOperatorFlights: string[]; // flights with "*" flag where operator lookup failed
+  failedEquipmentFlights: string[]; // flights where equipment lookup failed ("---")
 }

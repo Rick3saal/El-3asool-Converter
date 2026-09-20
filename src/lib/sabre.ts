@@ -13,6 +13,51 @@
  */
 import { Segment, Cabin, Direction, Issue } from "./types";
 import { estimateElapsed } from "./airports";
+import { airlineFromName } from "./airlines";
+
+const PRIMARY_MARKETING_ALIASES: Record<string, string[]> = {
+  AF: ["AF", "AIR FRANCE"],
+  AS: ["AS", "ALASKA", "ALASKA AIRLINES"],
+  LX: ["LX", "SWISS", "SWISS INTERNATIONAL AIR LINES", "SWISS INTERNATIONAL AIRLINES"],
+  UA: ["UA", "UNITED", "UNITED AIRLINES"],
+  AA: ["AA", "AMERICAN", "AMERICAN AIRLINES"],
+  DL: ["DL", "DELTA", "DELTA AIR LINES", "DELTA AIRLINES"],
+  BA: ["BA", "BRITISH AIRWAYS"],
+  LH: ["LH", "LUFTHANSA"],
+  AC: ["AC", "AIR CANADA"],
+  KL: ["KL", "KLM", "KLM ROYAL DUTCH AIRLINES"],
+};
+
+const REGIONAL_SUBSIDIARY_KEYWORDS = [
+  "EXPRESS", "EAGLE", "CONNECTION", "HOP", "CITYLINE", "CITYFLYER",
+  "ROUGE", "JAZZ", "HORIZON", "SKYWEST", "DBA", "AIRLINK", "ENVOY",
+  "PIEDMONT", "PSA", "REPUBLIC", "MESA", "COMMUTAIR", "GOJET", "ENDEAVOR",
+];
+
+export function shouldPrintOperatedBy(airline: string, operator: string | undefined): boolean {
+  if (!operator) return false;
+  const opUpper = operator.toUpperCase().trim();
+  const alUpper = airline.toUpperCase().trim();
+
+  // Regional or subsidiary operators count as different and still print the line
+  const isRegionalOrSubsidiary = REGIONAL_SUBSIDIARY_KEYWORDS.some((kw) =>
+    new RegExp(`\\b${kw}\\b`, "i").test(opUpper)
+  );
+  if (isRegionalOrSubsidiary) return true;
+
+  // Compare against marketing airline code and primary aliases
+  const aliases = PRIMARY_MARKETING_ALIASES[alUpper];
+  if (aliases) {
+    const cleanOp = opUpper.replace(/[^A-Z ]/g, " ").replace(/\s+/g, " ").trim();
+    if (aliases.includes(cleanOp)) return false; // same carrier -> do not print
+  }
+
+  // Also check if airlineFromName matches the marketing airline
+  const opCode = airlineFromName(opUpper);
+  if (opCode && opCode === alUpper) return false;
+
+  return true;
+}
 
 const MON3 = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
@@ -44,34 +89,26 @@ export function elapsedStr(minutes: number): string {
   return `${h}.${String(m).padStart(2, "0")}`;
 }
 
-/** day is ALWAYS zero-padded: 1OCT -> 01OCT (everywhere: itinerary,
- *  <--additional-->, and both chained and individual sell entries). */
-export function dateStr(day: number, month: number): string {
-  return `${String(day).padStart(2, "0")}${month3(month)}`;
-}
-
-/** Flight number as printed in the MAIN itinerary: right-aligned in a
- *  4-character field ("AS  748", "AS 1300", "BA  085"). The <additional>
- *  block and the sell entries stay compact, so they keep using s.num. */
-export function alignedFlightNumber(s: Segment): string {
-  return s.num.padStart(4, " ");
+export function dateStr(day: number, month: number, raw?: string): string {
+  if (raw && /^\d{2}[A-Z]{3}$/i.test(raw)) return raw.toUpperCase();
+  return `${day}${month3(month)}`;
 }
 
 export function mainItineraryLine(n: number, s: Segment): string {
   const dayMark = s.arrDay === 0 ? "" : `¥${s.arrDay}`;
   return (
-    `${n} ${s.airline} ${alignedFlightNumber(s)} ${dateStr(s.date.day, s.date.month)} ${s.origin} ${s.dest} ` +
+    `${n} ${s.airline} ${s.num} ${dateStr(s.date.day, s.date.month, s.date.raw)} ${s.origin} ${s.dest} ` +
     `${sabreClock(s.dep)} ${sabreClock(s.arr)}${dayMark} ${s.equip} ${elapsedStr(s.elapsed)} 0 N  CABIN-${s.cabin}`
   );
 }
 
 export function additionalLine(n: number, s: Segment): string {
-  return `${n} ${s.airline} ${s.num}${s.bookingClass} ${dateStr(s.date.day, s.date.month)}`;
+  return `${n} ${s.airline} ${s.num}${s.bookingClass} ${dateStr(s.date.day, s.date.month, s.date.raw)}`;
 }
 
 export function sellEntry(s: Segment, status: "NN1" | "GK1"): string {
   return (
-    `0${s.airline}${s.num}${s.bookingClass}${dateStr(s.date.day, s.date.month)}` +
+    `0${s.airline}${s.num}${s.bookingClass}${dateStr(s.date.day, s.date.month, s.date.raw)}` +
     `${s.origin}${s.dest}${status}`
   );
 }
@@ -88,7 +125,8 @@ export function chainLines(segments: Segment[]): string[] {
 
 export function operatedByLine(s: Segment): string | null {
   if (!s.operatedBy) return null;
-  return `*${s.origin}-${s.dest} OPERATED BY ${s.operatedBy}`;
+  if (!shouldPrintOperatedBy(s.airline, s.operatedBy)) return null;
+  return `*${s.origin}-${s.dest} OPERATED BY ${s.operatedBy.toUpperCase().trim()}`;
 }
 
 /** Validate every produced string against the hard rules. */
@@ -152,34 +190,17 @@ export function validateOutput(segments: Segment[], out: Segment[], inn: Segment
   return issues;
 }
 
-/**
- * Elapsed/block time in minutes.
- *
- * DST-aware UTC math (real airport timezone + the flight date) ALWAYS wins:
- *  - when the source states a duration we still compute from clock times and
- *    timezones; if the two disagree, the calculated value is used and the
- *    caller adds a note (`overrode: true`).
- *  - the stated value is only trusted when timezone math is impossible
- *    (unknown airport timezone).
- *  - when the source states nothing, the estimate is used (flagged unsure
- *    when no timezone data exists).
- */
+/** estimate elapsed when the source gave none */
 export function resolveElapsed(
   origin: string,
   dest: string,
   dep: number,
   arr: number,
-  date?: { month: number; day: number; year?: number },
-  explicit?: number
-): { minutes: number; confident: boolean; overrode: boolean; computed?: number } {
-  const calc = estimateElapsed(origin, dest, dep, arr, date);
-  if (explicit !== undefined) {
-    if (calc.confident && calc.minutes !== explicit) {
-      return { minutes: calc.minutes, confident: true, overrode: true, computed: calc.minutes };
-    }
-    return { minutes: explicit, confident: true, overrode: false };
-  }
-  return { minutes: calc.minutes, confident: calc.confident, overrode: false };
+  explicit?: number,
+  month?: number
+): { minutes: number; confident: boolean } {
+  if (explicit !== undefined) return { minutes: explicit, confident: true };
+  return estimateElapsed(origin, dest, dep, arr, month);
 }
 
 export type { Segment, Cabin, Direction };

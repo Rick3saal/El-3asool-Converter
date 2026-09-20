@@ -7,18 +7,19 @@ import {
   DEFAULT_AI_SETTINGS,
   defaultModelFor,
   extractFlightsWithAI,
-  GEMINI_MODEL_SUGGESTIONS,
-  lookupFlightsOnline,
+  sanitizeModel,
+  shouldAutoRunAi,
   type AiProvider,
   type AiSettings,
-  type OnlineLookupItem,
 } from "./lib/ai";
 import {
+  canSaveItinerary,
   clearLearned,
   flightKey,
   forgetAircraft,
   forgetFlight,
   forgetItinerary,
+  forgetItineraryForText,
   isLearningEnabled,
   learnAircraft,
   learnFlight,
@@ -31,6 +32,13 @@ import {
   type FlightCorrection,
   type LearnedItinerary,
 } from "./lib/learning";
+import {
+  clearLearnedClasses,
+  getLearnedClasses,
+  parseClassKey,
+  removeLearnedClass,
+  saveLearnedClass,
+} from "./lib/cabinClasses";
 
 /* ------------------------------------------------------------------ */
 /* constants                                                           */
@@ -110,7 +118,15 @@ const AI_LS_KEY = "el3asool.ai.settings.v1";
 function loadAiSettings(): AiSettings {
   try {
     const raw = localStorage.getItem(AI_LS_KEY);
-    if (raw) return { ...DEFAULT_AI_SETTINGS, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const provider: AiProvider = parsed.provider || "gemini";
+      return {
+        ...DEFAULT_AI_SETTINGS,
+        ...parsed,
+        model: sanitizeModel(provider, parsed.model),
+      };
+    }
   } catch {
     /* ignore */
   }
@@ -345,170 +361,6 @@ export default function App() {
     setEdited(result ? result.segments.map((s) => ({ ...s })) : null);
   }, [result]);
 
-  /* ---- online enrichment ----
-   * When AI Assist is on and the result still shows equipment "---" for a
-   * segment or a bare booking-class letter whose cabin couldn't be resolved,
-   * ask the AI (Gemini + Google Search grounding) for BOTH in a single call,
-   * then re-assemble the result with the found codes/cabins.
-   * One attempt per input; found values are memorized when learning is on. */
-  const [enrichBusy, setEnrichBusy] = useState(false);
-  const enrichedKeyRef = useRef<string>("");
-  useEffect(() => {
-    if (!result || !result.hasOutput) return;
-    const missingAircraft = result.segments.filter((s) => s.equip === "---");
-    const unresolvedCabins = result.unresolvedCabins ?? [];
-    if (missingAircraft.length === 0 && unresolvedCabins.length === 0) return;
-    if (!ai.enabled || !ai.apiKey || !ai.searchOnline) return;
-    const key = `${text}::${fallbackCabin ?? "·"}::${ai.model}`;
-    if (enrichedKeyRef.current === key) return; // already attempted for this input
-    let cancelled = false;
-    setEnrichBusy(true);
-    (async () => {
-      try {
-        const items: OnlineLookupItem[] = [];
-        for (const s of missingAircraft) {
-          items.push({
-            airline: s.airline,
-            number: s.num,
-            origin: s.origin,
-            dest: s.dest,
-            day: s.date.day,
-            month: s.date.month,
-            needAircraft: true,
-          });
-        }
-        for (const u of unresolvedCabins) {
-          items.push({
-            airline: u.airline,
-            number: u.number,
-            origin: u.origin,
-            dest: u.dest,
-            day: u.date.day,
-            month: u.date.month,
-            needAircraft: u.equip === "---" ? true : undefined,
-            bookingClass: u.bookingClass,
-          });
-        }
-        const outcome = await lookupFlightsOnline(items, ai);
-        if (cancelled) return;
-
-        const src = outcome.grounded
-          ? "checked online"
-          : outcome.usedFallback
-            ? "from model knowledge (quota fallback — ran without live search)"
-            : "from model knowledge";
-
-        // 1. patch built segments whose equipment is still "---"
-        const aircraftNotes: string[] = [];
-        const found: Segment[] = [];
-        const newSegs = result.segments.map((s) => {
-          if (s.equip !== "---") return s;
-          const r = outcome.aircraft.get(`${s.airline}${parseInt(s.num, 10)}`);
-          if (r?.equip) {
-            const next = { ...s, equip: r.equip, equipRaw: r.aircraft ?? s.equipRaw };
-            found.push(next);
-            aircraftNotes.push(`${s.airline} ${s.num} = ${next.equipRaw ?? next.equip} (${next.equip})`);
-            return next;
-          }
-          return s;
-        });
-
-        // 2. resolve bare booking-class letters: build the missing segments
-        //    in their original positions and remember the reasoning.
-        const cabinNotes: string[] = [];
-        const cabinSegs: Array<{ seg: Segment; insertAt: number }> = [];
-        const resolvedCabinLabels: string[] = [];
-        const stillUnresolved: string[] = [];
-        for (const u of unresolvedCabins) {
-          const label = `${u.airline} ${u.num} · ${u.origin} → ${u.dest}`;
-          const r = outcome.cabins.get(`${u.airline}${parseInt(u.number, 10)}`);
-          if (!r?.cabin) {
-            stillUnresolved.push(label);
-            continue;
-          }
-          const ac = u.equip === "---" ? outcome.aircraft.get(`${u.airline}${parseInt(u.number, 10)}`) : undefined;
-          const seg: Segment = {
-            airline: u.airline,
-            num: u.num,
-            date: u.date,
-            origin: u.origin,
-            dest: u.dest,
-            dep: u.dep,
-            arr: u.arr,
-            arrDay: u.arrDay,
-            equip: ac?.equip ?? u.equip,
-            equipRaw: ac?.aircraft ?? u.equipRaw,
-            elapsed: u.elapsed,
-            cabin: r.cabin,
-            bookingClass: u.bookingClass,
-            operatedBy: u.operatedBy,
-            direction: u.direction,
-            // the booking-class letter itself came from the source — only the
-            // cabin it maps to was resolved online
-            classFromSource: true,
-          };
-          cabinSegs.push({ seg, insertAt: u.insertAt });
-          cabinNotes.push(`${u.airline} ${u.num} ${u.bookingClass} → ${r.cabin}${r.reasoning ? ` (${r.reasoning})` : ""}`);
-          resolvedCabinLabels.push(label);
-          if (ac?.equip) {
-            found.push(seg);
-            aircraftNotes.push(`${u.airline} ${u.num} = ${seg.equipRaw ?? seg.equip} (${seg.equip})`);
-          }
-        }
-
-        if (found.length === 0 && cabinSegs.length === 0) return; // nothing found
-
-        const insertions = cabinSegs.slice().sort((a, b) => a.insertAt - b.insertAt);
-        let inserted = 0;
-        for (const c of insertions) {
-          newSegs.splice(c.insertAt + inserted, 0, c.seg);
-          inserted += 1;
-        }
-
-        const foundKeys = new Set(found.map((s) => `${s.airline} ${s.num}`));
-        const keptIssues = result.issues.filter(
-          (i) =>
-            !(i.text.includes("aircraft not found") && [...foundKeys].some((k) => i.text.includes(k))) &&
-            !(i.level === "error" && (i.text.includes("cabin not stated in the source") || i.text.includes("have no stated cabin")))
-        );
-        const nextIssues: Issue[] = [];
-        if (aircraftNotes.length > 0) {
-          nextIssues.push({ level: "info", text: `🌐 Aircraft ${src}: ${aircraftNotes.join(" · ")}.` });
-        }
-        if (cabinNotes.length > 0) {
-          nextIssues.push({ level: "info", text: `🌐 Cabin resolved online: ${cabinNotes.join(" · ")}.` });
-        }
-        nextIssues.push(...keptIssues);
-        if (stillUnresolved.length > 0) {
-          nextIssues.push({
-            level: "error",
-            text:
-              stillUnresolved.length === 1
-                ? `${stillUnresolved[0]}: cabin not stated in the source — choose a cabin below so the booking class can be assigned.`
-                : `${stillUnresolved.length} flights have no stated cabin — choose a cabin below to assign their booking classes.`,
-          });
-        }
-
-        const nextMissing = result.missingCabinFlights.filter((m) => !resolvedCabinLabels.includes(m));
-        const next = assembleFromSegments(newSegs, nextIssues, nextMissing);
-        enrichedKeyRef.current = key;
-        setResult(next);
-        if (learningOn) {
-          found.forEach((s) => learnFlight(s));
-          cabinSegs.forEach((c) => learnFlight(c.seg));
-          setLearnedVersion((v) => v + 1);
-        }
-      } catch (e) {
-        if (!cancelled) setAiNote(`Online lookup failed: ${e instanceof Error ? e.message : String(e)}`);
-      } finally {
-        if (!cancelled) setEnrichBusy(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [result, ai, text, fallbackCabin, learningOn]);
-
   /* ---- live result: edited segments re-enter the SAME formatter/validator ---- */
   const liveResult: ConverterResult | null = useMemo(() => {
     if (!result) return result;
@@ -520,7 +372,14 @@ export default function App() {
     // re-validate the EDITED output; stale internal checks from the original
     // parse are replaced by fresh ones, parse-time notes are kept.
     const carriedIssues = result.issues.filter((i) => !i.text.startsWith("Internal:"));
-    return assembleFromSegments(edited, carriedIssues, result.missingCabinFlights, result.unresolvedCabins);
+    return assembleFromSegments(
+      edited,
+      carriedIssues,
+      result.missingCabinFlights,
+      result.unknownClassQuestions,
+      result.failedOperatorFlights,
+      result.failedEquipmentFlights
+    );
   }, [result, edited]);
 
   const editedCount = useMemo(() => {
@@ -561,6 +420,12 @@ export default function App() {
       itineraries: listLearnedItineraries(),
       flights: listLearnedFlights(),
       aircraft: listLearnedAircraft(),
+      classes: Array.from(getLearnedClasses().entries()).map(([k, c]) => ({
+        key: k,
+        airline: parseClassKey(k).airline,
+        letter: parseClassKey(k).letter,
+        cabin: c,
+      })),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [learnedVersion, result]
@@ -584,12 +449,45 @@ export default function App() {
   }, []);
   const handleClearLearned = useCallback(() => {
     clearLearned();
+    clearLearnedClasses();
     setLearnedVersion((v) => v + 1);
   }, []);
   const toggleLearning = useCallback((on: boolean) => {
     setLearningOn(on);
     setLearningEnabled(on);
   }, []);
+
+  const handleConfirmClassCabin = useCallback(
+    (airline: string, classLetter: string, cabin: Cabin) => {
+      saveLearnedClass(airline, classLetter, cabin);
+      setLearnedVersion((v) => v + 1);
+      cacheRef.current.clear();
+      setResult(convert(text, fallbackCabin));
+    },
+    [text, fallbackCabin, convert]
+  );
+
+  const handleForgetLearnedClass = useCallback(
+    (airline: string, letter: string) => {
+      removeLearnedClass(airline, letter);
+      setLearnedVersion((v) => v + 1);
+      cacheRef.current.clear();
+      setResult(convert(text, fallbackCabin));
+    },
+    [text, fallbackCabin, convert]
+  );
+
+  const handleClearSavedItinerary = useCallback(() => {
+    if (text) {
+      forgetItineraryForText(text);
+    }
+    cacheRef.current.clear();
+    setResult(convert(text, fallbackCabin));
+    setLearnedVersion((v) => v + 1);
+    setAiNote("Saved itinerary cleared.");
+    const t = window.setTimeout(() => setAiNote(""), 3000);
+    return () => window.clearTimeout(t);
+  }, [text, fallbackCabin, convert]);
 
   /* ---- AI assist ---- */
   const updateAi = useCallback((patch: Partial<AiSettings>) => {
@@ -600,6 +498,9 @@ export default function App() {
     });
   }, []);
 
+  const [aiRetrying, setAiRetrying] = useState(false);
+  const [aiStatusMsg, setAiStatusMsg] = useState("");
+
   const runAi = useCallback(
     async (rawText: string) => {
       if (!ai.apiKey) {
@@ -609,15 +510,21 @@ export default function App() {
       }
       if (!rawText.trim()) return;
       setAiBusy(true);
+      setAiRetrying(false);
+      setAiStatusMsg("");
       setAiError("");
       setAiNote("");
       try {
-        const flights = await extractFlightsWithAI(rawText, ai);
+        const flights = await extractFlightsWithAI(rawText, ai, (status) => {
+          setAiRetrying(true);
+          setAiStatusMsg(status);
+        });
         const out = convertFlights(flights, fallbackCabin);
         setResult(out);
 
-        // Auto-learn when learning is enabled so the user never needs AI again for this flight!
-        if (learningOn) {
+        // Auto-learn when learning is enabled, but NEVER save incomplete/bad results
+        // (no "---", no missing operator on star segments)
+        if (learningOn && canSaveItinerary(flights)) {
           learnItinerary(rawText, flights);
           out.segments.forEach((seg) => learnFlight(seg));
           setLearnedVersion((v) => v + 1);
@@ -631,20 +538,23 @@ export default function App() {
         setAiError(e instanceof Error ? e.message : "AI extraction failed.");
       } finally {
         setAiBusy(false);
+        setAiRetrying(false);
+        setAiStatusMsg("");
       }
     },
     [ai, fallbackCabin, learningOn]
   );
 
-  /* Auto-run AI when it is enabled and the local parser could not build a
-   * complete result (missing fields / skipped flights). Manual button always
-   * available. Never fires twice for the same unchanged input. */
+  /* Auto-run AI when it is enabled and the local parser counts as failed:
+   *  - a segment has no equipment ("---");
+   *  - a segment with a "*" flag has no operator;
+   *  - an airline + class letter pair is not in confirmed or learned table; or
+   *  - the parser held back any segment.
+   * Does not wait for "Read with AI" click. */
   useEffect(() => {
     if (!ai.enabled || !ai.apiKey || !text.trim()) return;
     if (!result) return;
-    const hasError = result.issues.some((i) => i.level === "error");
-    const nothingBuilt = !result.hasOutput;
-    if (!hasError && !nothingBuilt) return;
+    if (!shouldAutoRunAi(result)) return;
     const key = `${text}`;
     if (aiAutoRef.current === key) return;
     const t = window.setTimeout(() => {
@@ -683,7 +593,28 @@ export default function App() {
 
   /* ---------- global clipboard detection ---------- */
   useEffect(() => {
+    const isOtherInputOrEditable = (target: HTMLElement | null, active: Element | null): boolean => {
+      const el = target || (active as HTMLElement | null);
+      if (!el) return false;
+      if (el === inputRef.current) return false; // main flight itinerary box is allowed!
+      if (el.tagName === "INPUT" || el.tagName === "SELECT") return true;
+      if (el.tagName === "TEXTAREA" && el !== inputRef.current) return true;
+      if (el.isContentEditable) return true;
+      if (el.closest("input, select, [contenteditable='true']")) return true;
+      if (el.closest("textarea") && el.closest("textarea") !== inputRef.current) return true;
+      return false;
+    };
+
     const onPaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const activeEl = document.activeElement;
+
+      // When focus is inside an input, textarea or contenteditable element other than the
+      // itinerary box (e.g. the API key box), do nothing and let the browser paste normally!
+      if (isOtherInputOrEditable(target, activeEl)) {
+        return;
+      }
+
       const cd = e.clipboardData;
       if (!cd) return;
       let imageFile: File | null = null;
@@ -699,8 +630,8 @@ export default function App() {
       } catch {
         /* ignore clipboard read errors */
       }
-      const target = e.target as HTMLElement | null;
-      const inTextarea = !!target && (target.tagName === "TEXTAREA" || !!target.closest("textarea"));
+
+      const inItineraryBox = target === inputRef.current || activeEl === inputRef.current;
       const meaningfulText = textData.trim().length >= 40 && !looksLikeUrlOnly(textData);
 
       if (imageFile && !meaningfulText) {
@@ -709,17 +640,33 @@ export default function App() {
         void handleImageFile(imageFile);
         return;
       }
-      if (meaningfulText && !inTextarea) {
-        // text pasted anywhere in the app → straight into the local parser
+      if (meaningfulText && !inItineraryBox) {
+        // text pasted anywhere on the page (not in any other field) → straight into the local parser
         e.preventDefault();
         setText(textData);
         return;
       }
-      // text pasted into the textarea uses the native flow; the debounce
-      // handler above converts it locally.
+      // text pasted into the itinerary textarea uses the native flow; the debounce
+      // handler converts it.
     };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+        const target = e.target as HTMLElement | null;
+        const activeEl = document.activeElement;
+        if (isOtherInputOrEditable(target, activeEl)) {
+          // Never preventDefault when focus is in the API key field or other input!
+          return;
+        }
+      }
+    };
+
     window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("paste", onPaste);
+      window.removeEventListener("keydown", onKeyDown);
+    };
   }, [handleImageFile]);
 
   /* ---------- drag & drop / upload ---------- */
@@ -801,12 +748,17 @@ export default function App() {
 
   const showIssues = useMemo(() => {
     if (!liveResult) return [];
-    return liveResult.issues.filter((i) => i.level !== "info");
+    return liveResult.issues.filter(
+      (i) =>
+        i.level !== "info" &&
+        !i.text.toLowerCase().includes("equipment not found") &&
+        !i.text.toLowerCase().includes("operator not found")
+    );
   }, [liveResult]);
 
-  const infoIssues = useMemo(() => {
-    if (!liveResult) return [];
-    return liveResult.issues.filter((i) => i.level === "info");
+  const infoIssue = useMemo(() => {
+    if (!liveResult) return null;
+    return liveResult.issues.find((i) => i.level === "info") ?? null;
   }, [liveResult]);
 
   const outCount = liveResult?.segments.filter((s) => s.direction === "OUT").length ?? 0;
@@ -898,6 +850,20 @@ export default function App() {
               >
                 🧭 AI Assist{ai.enabled && ai.apiKey ? " · on" : ""}
               </button>
+              {!ai.apiKey && (
+                <a
+                  href={
+                    ai.provider === "gemini"
+                      ? "https://aistudio.google.com/apikey"
+                      : "https://platform.openai.com/api-keys"
+                  }
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-lg border border-honey/40 bg-honey/15 px-3 py-1.5 text-xs font-bold text-amber-200 transition hover:bg-honey/25"
+                >
+                  Get API key ↗
+                </a>
+              )}
               <button
                 type="button"
                 onClick={readClipboardImage}
@@ -988,49 +954,6 @@ export default function App() {
             </div>
           )}
 
-          {/* fallback cabin prompt (only when genuinely needed) */}
-          {result && result.missingCabinFlights.length > 0 && !fallbackCabin && (
-            <div className="fade-up mt-4 rounded-xl border border-amber-300/25 bg-amber-300/[0.05] p-4">
-              <p className="text-sm font-semibold text-amber-200">
-                Cabin not stated in the itinerary{" "}
-                <span className="font-normal text-amber-200/70">
-                  ({result.missingCabinFlights.length} flight{result.missingCabinFlights.length > 1 ? "s" : ""}:{" "}
-                  {result.missingCabinFlights.join(" · ")})
-                </span>
-              </p>
-              <p className="mt-1 text-xs text-amber-200/60">
-                Choose the cabin to assign its default booking class:
-              </p>
-              <div className="mt-2.5 flex flex-wrap gap-2">
-                {CABIN_OPTIONS.map((c) => (
-                  <button
-                    key={c.value}
-                    type="button"
-                    onClick={() => setFallbackCabin(c.value)}
-                    className="rounded-lg border border-honey/40 bg-honey/10 px-3.5 py-1.5 text-xs font-bold text-honey transition hover:bg-honey/20"
-                  >
-                    {c.label} <span className="font-normal opacity-70">· {c.hint}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          {fallbackCabin && result && result.missingCabinFlights.length === 0 && (
-            <div className="mt-3 flex items-center justify-between rounded-lg border border-emerald-300/20 bg-emerald-300/[0.05] px-3.5 py-2">
-              <p className="text-xs text-emerald-200/90">
-                Cabin <span className="font-bold">{CABIN_OPTIONS.find((c) => c.value === fallbackCabin)?.label}</span>{" "}
-                applied to flights without a stated cabin.
-              </p>
-              <button
-                type="button"
-                onClick={() => setFallbackCabin(null)}
-                className="text-[11px] font-semibold text-slate-400 underline-offset-2 hover:text-white hover:underline"
-              >
-                Undo
-              </button>
-            </div>
-          )}
-
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
             <p>
               Paste with <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono">⌘V</kbd> /{" "}
@@ -1047,8 +970,33 @@ export default function App() {
           </div>
           {pasteHint && <p className="mt-2 text-[11.5px] text-rose-300/90">{pasteHint}</p>}
 
+          {aiRetrying && (
+            <p className="mt-2 text-[11.5px] text-amber-300 font-medium animate-pulse">
+              {aiStatusMsg || "Retrying lookup..."}
+            </p>
+          )}
+
           {aiNote && <p className="mt-2 text-[11.5px] text-emerald-300/90">{aiNote}</p>}
-          {aiError && <p className="mt-2 text-[11.5px] text-rose-300/90">{aiError}</p>}
+
+          {aiError && (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-400/30 bg-rose-400/[0.08] p-3 text-xs text-rose-300">
+              <div className="min-w-0 flex-1 space-y-1">
+                <p>{aiError}</p>
+                {(aiError.includes("429") || aiError.toLowerCase().includes("rate limit") || aiError.toLowerCase().includes("quota")) && (
+                  <p className="text-[11.5px] text-amber-200/90">
+                    Tip: On free Google AI Studio keys, <strong>Gemini 3.5 Flash Lite</strong> offers 500 requests per day (vs 20/day on regular Flash). You can select it in the AI Assist panel above.
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => void runAi(text)}
+                className="shrink-0 rounded-lg border border-rose-400/40 bg-rose-500/20 px-3 py-1 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/30"
+              >
+                Retry lookup
+              </button>
+            </div>
+          )}
 
           {/* ---- AI Assist panel ---- */}
           {aiOpen && (
@@ -1092,32 +1040,119 @@ export default function App() {
                 </div>
                 <div>
                   <label className={labelCls}>Model</label>
-                  <input
-                    className={inputCls}
-                    value={ai.model}
-                    placeholder={defaultModelFor(ai.provider)}
-                    list={ai.provider === "gemini" ? "ai-model-suggestions" : undefined}
-                    onChange={(e) => updateAi({ model: e.target.value })}
-                  />
-                  {ai.provider === "gemini" && (
-                    <datalist id="ai-model-suggestions">
-                      {GEMINI_MODEL_SUGGESTIONS.map((m) => (
-                        <option key={m} value={m} />
-                      ))}
-                    </datalist>
+                  {ai.provider === "gemini" ? (
+                    <select
+                      className={inputCls}
+                      value={ai.model}
+                      onChange={(e) => updateAi({ model: e.target.value })}
+                    >
+                      <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommended - fast & active)</option>
+                      <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (High quota - 500 RPD)</option>
+                      <option value="gemini-3.7-flash">Gemini 3.7 Flash</option>
+                      <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+                      <option value="gemini-3-flash">Gemini 3 Flash</option>
+                      <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (500 RPD)</option>
+                      <option value="gemini-3.6-flash">Gemini 3.6 Flash</option>
+                    </select>
+                  ) : ai.provider === "openai" ? (
+                    <select
+                      className={inputCls}
+                      value={ai.model}
+                      onChange={(e) => updateAi({ model: e.target.value })}
+                    >
+                      <option value="gpt-4o-mini">gpt-4o-mini (Recommended)</option>
+                      <option value="gpt-4o">gpt-4o</option>
+                    </select>
+                  ) : (
+                    <input
+                      className={inputCls}
+                      value={ai.model}
+                      placeholder={defaultModelFor(ai.provider)}
+                      onChange={(e) => updateAi({ model: e.target.value })}
+                    />
                   )}
                 </div>
                 <div className="sm:col-span-2">
-                  <label className={labelCls}>API key</label>
+                  <div className="flex items-center justify-between pb-1">
+                    <label className={labelCls}>API key</label>
+                    {(ai.provider === "gemini" || ai.provider === "openai") && (
+                      <a
+                        href={
+                          ai.provider === "gemini"
+                            ? "https://aistudio.google.com/apikey"
+                            : "https://platform.openai.com/api-keys"
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[11.5px] font-semibold text-honey hover:underline inline-flex items-center gap-1"
+                      >
+                        Get {ai.provider === "gemini" ? "Google Gemini" : "OpenAI"} key ↗
+                      </a>
+                    )}
+                  </div>
                   <input
                     type="password"
                     className={inputCls}
                     value={ai.apiKey}
                     placeholder="paste your API key"
                     autoComplete="off"
-                    onChange={(e) => updateAi({ apiKey: e.target.value })}
+                    onPaste={(e) => {
+                      e.stopPropagation();
+                      const clip = e.clipboardData.getData("text/plain");
+                      if (clip) {
+                        e.preventDefault();
+                        const cleanKey = clip.replace(/[\r\n\s]+/g, "").trim();
+                        updateAi({ apiKey: cleanKey });
+                      }
+                    }}
+                    onChange={(e) => {
+                      const cleanKey = e.target.value.replace(/[\r\n\s]+/g, "").trim();
+                      updateAi({ apiKey: cleanKey });
+                    }}
                   />
                 </div>
+
+                {/* "Get your API key" button for first-time users */}
+                {!ai.apiKey && (ai.provider === "gemini" || ai.provider === "openai") && (
+                  <div className="sm:col-span-2 rounded-xl border border-honey/30 bg-honey/[0.06] p-4 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-honey">Need an API key?</p>
+                        <p className="text-[11.5px] text-slate-300/80">Get a free key to enable AI Assist</p>
+                      </div>
+                      <a
+                        href={
+                          ai.provider === "gemini"
+                            ? "https://aistudio.google.com/apikey"
+                            : "https://platform.openai.com/api-keys"
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-honey px-3 py-1.5 text-xs font-bold text-slate-950 transition hover:bg-honey/90 shadow-sm"
+                      >
+                        Get your API key ↗
+                      </a>
+                    </div>
+                    <ol className="mt-3 list-decimal space-y-1 pl-4 text-slate-300 text-[11.5px] leading-relaxed">
+                      {ai.provider === "gemini" ? (
+                        <>
+                          <li>Sign in with your Google account.</li>
+                          <li>Click Create API key.</li>
+                          <li>Copy it and paste it in the API key box here.</li>
+                        </>
+                      ) : (
+                        <>
+                          <li>Sign in with your OpenAI account.</li>
+                          <li>Click Create new secret key.</li>
+                          <li>Copy it and paste it in the API key box here.</li>
+                        </>
+                      )}
+                    </ol>
+                    <p className="mt-2 text-[11px] text-slate-400">
+                      Your key is stored only in this browser.
+                    </p>
+                  </div>
+                )}
                 {ai.provider === "custom" && (
                   <div className="sm:col-span-2">
                     <label className={labelCls}>Base URL</label>
@@ -1154,55 +1189,17 @@ export default function App() {
                   />
                 </button>
               </div>
-
-              {ai.enabled && (
-                <div className="mt-3 flex items-center justify-between border-t border-honey/15 pt-3">
-                  <span className="text-[11.5px] text-amber-200/80">
-                    🌐 Look up missing aircraft &amp; cabins online
-                    <span className="ml-1.5 text-[10.5px] text-amber-200/50">
-                      (Gemini + Google Search — fills “---” equipment and resolves unknown booking-class letters, small per-search cost on your key)
-                    </span>
-                  </span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={ai.searchOnline}
-                    onClick={() => updateAi({ searchOnline: !ai.searchOnline })}
-                    className={cn(
-                      "relative h-6 w-11 shrink-0 rounded-full transition-colors",
-                      ai.searchOnline ? "bg-honey" : "bg-slate-700"
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all",
-                        ai.searchOnline ? "left-[22px]" : "left-0.5"
-                      )}
-                    />
-                  </button>
-                </div>
-              )}
             </div>
           )}
         </section>
 
-        {/* ============ online enrichment status ============ */}
-        {enrichBusy && (
-          <div className="mt-5 flex items-center gap-2 rounded-xl border border-honey/25 bg-honey/[0.05] px-4 py-3 text-[12.5px] text-amber-100/90">
-            <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-honey/30 border-t-honey" />
-            Looking up missing aircraft &amp; cabins online…
-          </div>
-        )}
-
         {/* ============ issues ============ */}
-        {(showIssues.length > 0 || infoIssues.length > 0) && (
+        {(showIssues.length > 0 || infoIssue) && (
           <div className="mt-5 space-y-2">
             {showIssues.map((issue, idx) => (
               <IssueRow key={idx} issue={issue} />
             ))}
-            {infoIssues.map((issue, idx) => (
-              <IssueRow key={`info-${idx}`} issue={issue} />
-            ))}
+            {infoIssue && <IssueRow issue={infoIssue} />}
           </div>
         )}
 
@@ -1265,6 +1262,119 @@ export default function App() {
               onCopy={() => void handleCopy("ind", liveResult.individual)}
             />
 
+            {/* ============ questions, warnings & actions below output ============ */}
+            <div className="space-y-4 pt-2">
+              {/* Unknown class letter questions */}
+              {liveResult.unknownClassQuestions && liveResult.unknownClassQuestions.length > 0 && (
+                <div className="space-y-3">
+                  {liveResult.unknownClassQuestions.map((q) => (
+                    <div
+                      key={`${q.airline}-${q.classLetter}`}
+                      className="rounded-xl border border-amber-300/30 bg-amber-400/[0.07] p-4 text-xs"
+                    >
+                      <p className="text-sm font-semibold text-amber-200">
+                        What cabin is {q.airline} class {q.classLetter}?
+                      </p>
+                      <p className="mt-1 text-[11.5px] text-amber-200/70">
+                        Choose the cabin for {q.airline} class {q.classLetter}. Your answer is saved as “{q.airline}: {q.classLetter} = &lt;CABIN&gt;”.
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {(["ECONOMY", "BUSINESS", "PREMIUM", "FIRST"] as Cabin[]).map((cab) => (
+                          <button
+                            key={cab}
+                            type="button"
+                            onClick={() => handleConfirmClassCabin(q.airline, q.classLetter, cab)}
+                            className="rounded-lg border border-amber-400/40 bg-amber-400/15 px-3.5 py-1.5 text-xs font-bold text-amber-100 transition hover:bg-amber-400/30"
+                          >
+                            {cab.charAt(0) + cab.slice(1).toLowerCase()}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Missing cabin flights (neither class letter nor cabin stated) */}
+              {liveResult.missingCabinFlights && liveResult.missingCabinFlights.length > 0 && !fallbackCabin && (
+                <div className="rounded-xl border border-amber-300/25 bg-amber-300/[0.05] p-4 text-xs">
+                  <p className="text-sm font-semibold text-amber-200">
+                    Cabin not stated in the itinerary{" "}
+                    <span className="font-normal text-amber-200/70">
+                      ({liveResult.missingCabinFlights.length} flight{liveResult.missingCabinFlights.length > 1 ? "s" : ""}:{" "}
+                      {liveResult.missingCabinFlights.join(" · ")})
+                    </span>
+                  </p>
+                  <p className="mt-1 text-xs text-amber-200/60">
+                    Choose the cabin to assign its default booking class:
+                  </p>
+                  <div className="mt-2.5 flex flex-wrap gap-2">
+                    {CABIN_OPTIONS.map((c) => (
+                      <button
+                        key={c.value}
+                        type="button"
+                        onClick={() => setFallbackCabin(c.value)}
+                        className="rounded-lg border border-honey/40 bg-honey/10 px-3.5 py-1.5 text-xs font-bold text-honey transition hover:bg-honey/20"
+                      >
+                        {c.label} <span className="font-normal opacity-70">· {c.hint}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Warnings with Retry buttons */}
+              {((liveResult.failedOperatorFlights && liveResult.failedOperatorFlights.length > 0) ||
+                (liveResult.failedEquipmentFlights && liveResult.failedEquipmentFlights.length > 0)) && (
+                <div className="space-y-2">
+                  {liveResult.failedOperatorFlights?.map((flt) => (
+                    <div
+                      key={`fail-op-${flt}`}
+                      className="flex items-center justify-between gap-3 rounded-xl border border-amber-400/30 bg-amber-400/[0.08] p-3 text-xs text-amber-200"
+                    >
+                      <p>operator not found for {flt} (lookup failed). Tap Retry.</p>
+                      <button
+                        type="button"
+                        onClick={() => void runAi(text)}
+                        className="shrink-0 rounded-lg bg-amber-400/20 border border-amber-400/40 px-3 py-1 font-semibold text-amber-100 hover:bg-amber-400/30 transition"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  ))}
+                  {liveResult.failedEquipmentFlights?.map((flt) => (
+                    <div
+                      key={`fail-eq-${flt}`}
+                      className="flex items-center justify-between gap-3 rounded-xl border border-amber-400/30 bg-amber-400/[0.08] p-3 text-xs text-amber-200"
+                    >
+                      <p>equipment not found for {flt}. Tap Retry.</p>
+                      <button
+                        type="button"
+                        onClick={() => void runAi(text)}
+                        className="shrink-0 rounded-lg bg-amber-400/20 border border-amber-400/40 px-3 py-1 font-semibold text-amber-100 hover:bg-amber-400/30 transition"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Clear saved itinerary button */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/5">
+                <button
+                  type="button"
+                  onClick={handleClearSavedItinerary}
+                  className="rounded-lg border border-white/10 bg-slate-900/60 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-rose-400/40 hover:text-rose-200 transition"
+                >
+                  Clear saved itinerary
+                </button>
+                <div className="text-[11px] text-slate-500">
+                  {liveResult.segments.length} segment{liveResult.segments.length > 1 ? "s" : ""} converted
+                </div>
+              </div>
+            </div>
+
             {/* ---- self-learning manager ---- */}
             <LearningPanel
               open={learnedOpen}
@@ -1274,9 +1384,11 @@ export default function App() {
               itineraries={learnedRules.itineraries}
               flights={learnedRules.flights}
               aircraft={learnedRules.aircraft}
+              classes={learnedRules.classes}
               onForgetItinerary={handleForgetItinerary}
               onForgetFlight={handleForgetFlight}
               onForgetAircraft={handleForgetAircraft}
+              onForgetClass={handleForgetLearnedClass}
               onClearAll={handleClearLearned}
             />
           </div>
@@ -1619,9 +1731,11 @@ interface LearningPanelProps {
   itineraries: LearnedItinerary[];
   flights: FlightCorrection[];
   aircraft: AircraftCorrection[];
+  classes: Array<{ key: string; airline: string; letter: string; cabin: Cabin }>;
   onForgetItinerary: (id: string) => void;
   onForgetFlight: (key: string) => void;
   onForgetAircraft: (phrase: string) => void;
+  onForgetClass: (airline: string, letter: string) => void;
   onClearAll: () => void;
 }
 
@@ -1633,12 +1747,14 @@ function LearningPanel({
   itineraries,
   flights,
   aircraft,
+  classes,
   onForgetItinerary,
   onForgetFlight,
   onForgetAircraft,
+  onForgetClass,
   onClearAll,
 }: LearningPanelProps) {
-  const total = itineraries.length + flights.length + aircraft.length;
+  const total = itineraries.length + flights.length + aircraft.length + classes.length;
   return (
     <div className="glass overflow-hidden rounded-2xl">
       <button
@@ -1754,6 +1870,37 @@ function LearningPanel({
                     <button
                       type="button"
                       onClick={() => onForgetFlight(flightKey(f.airline, f.num, f.origin, f.dest))}
+                      className="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[10.5px] font-semibold text-slate-400 transition hover:border-rose-300/40 hover:text-rose-200"
+                    >
+                      Forget
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {classes.length > 0 && (
+            <div>
+              <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+                Learned Booking Classes
+              </p>
+              <ul className="space-y-1.5">
+                {classes.map((c) => (
+                  <li
+                    key={c.key}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-[11.5px] text-slate-300"
+                  >
+                    <span>
+                      <span className="font-bold text-slate-100">
+                        {c.airline}: {c.letter}
+                      </span>{" "}
+                      ={" "}
+                      <span className="font-semibold text-honey">{c.cabin}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onForgetClass(c.airline, c.letter)}
                       className="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[10.5px] font-semibold text-slate-400 transition hover:border-rose-300/40 hover:text-rose-200"
                     >
                       Forget

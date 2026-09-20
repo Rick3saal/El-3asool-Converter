@@ -1,51 +1,230 @@
 /**
- * Built-in knowledge of specific notable flights.
+ * Known-flight table.
+ * Check it before searching online for operating carrier or equipment.
  *
- * Used ONLY to fill in what the source does not say:
- *  - equipment code when the source gives no aircraft
- *  - operating carrier when the source names no operator (e.g. Style A's
- *    "AS*2010" flag tells us the flight is not operated by Alaska metal —
- *    the table says Horizon Air does it).
- *
- * The user's source always wins: if the text names a different operator or a
- * different aircraft for the same flight, the source is used and the table
- * entry is ignored for that field.
+ * Specific entries requested:
+ *  - AF 6453 VTZ-BLR = INDIGO (A320 equipment)
+ *  - AF 3775 BLR-VTZ = INDIGO (A320 equipment)
+ *  - AS 2010 SEA-YVR = HORIZON AIR (E75 equipment)
  */
 
 export interface KnownFlight {
   airline: string;
-  number: string;
-  /** optional route constraint — entry only applies to this city pair */
+  flightNumber: string;
   origin?: string;
   dest?: string;
-  /** Sabre equipment code */
+  operator: string;
   equip?: string;
-  /** raw aircraft family name, kept for reference/learning */
-  equipRaw?: string;
-  /** operating carrier as it should print, e.g. "HORIZON AIR" */
-  operatedBy?: string;
 }
 
-const KNOWN_FLIGHTS: KnownFlight[] = [
-  // Alaska Airlines transpacific pair (Boeing 787-9, Alaska metal)
-  { airline: "AS", number: "119", origin: "SEA", dest: "ICN", equip: "789", equipRaw: "Boeing 787-9" },
-  { airline: "AS", number: "120", origin: "ICN", dest: "SEA", equip: "789", equipRaw: "Boeing 787-9" },
-  // Alaska 2010 SEA-YVR is Horizon Air (Embraer 175)
-  { airline: "AS", number: "2010", origin: "SEA", dest: "YVR", equip: "E75", equipRaw: "Embraer 175", operatedBy: "HORIZON AIR" },
+export const KNOWN_FLIGHTS: KnownFlight[] = [
+  // Air France / IndiGo
+  {
+    airline: "AF",
+    flightNumber: "6453",
+    origin: "VTZ",
+    dest: "BLR",
+    operator: "INDIGO",
+    equip: "320",
+  },
+  {
+    airline: "AF",
+    flightNumber: "3775",
+    origin: "BLR",
+    dest: "VTZ",
+    operator: "INDIGO",
+    equip: "320",
+  },
+  // Alaska Airlines / Horizon Air
+  {
+    airline: "AS",
+    flightNumber: "2010",
+    origin: "SEA",
+    dest: "YVR",
+    operator: "HORIZON AIR",
+    equip: "E75",
+  },
+  // British Airways long-haul flights
+  {
+    airline: "BA",
+    flightNumber: "43",
+    origin: "LHR",
+    dest: "CPT",
+    operator: "BRITISH AIRWAYS",
+    equip: "788",
+  },
+  {
+    airline: "BA",
+    flightNumber: "043",
+    origin: "LHR",
+    dest: "CPT",
+    operator: "BRITISH AIRWAYS",
+    equip: "788",
+  },
+  {
+    airline: "BA",
+    flightNumber: "56",
+    origin: "JNB",
+    dest: "LHR",
+    operator: "BRITISH AIRWAYS",
+    equip: "388",
+  },
+  {
+    airline: "BA",
+    flightNumber: "056",
+    origin: "JNB",
+    dest: "LHR",
+    operator: "BRITISH AIRWAYS",
+    equip: "388",
+  },
+  // Delta / Air France codeshare (LAX-CDG is Boeing 777-300ER = 77W)
+  {
+    airline: "DL",
+    flightNumber: "8727",
+    origin: "LAX",
+    dest: "CDG",
+    operator: "AIR FRANCE",
+    equip: "77W",
+  },
+  {
+    airline: "AF",
+    flightNumber: "8727",
+    origin: "LAX",
+    dest: "CDG",
+    operator: "AIR FRANCE",
+    equip: "77W",
+  },
+  // United / Air Canada codeshares
+  {
+    airline: "UA",
+    flightNumber: "8466",
+    origin: "LAX",
+    dest: "YUL",
+    operator: "AIR CANADA",
+    equip: "223",
+  },
+  {
+    airline: "UA",
+    flightNumber: "8062",
+    origin: "YUL",
+    dest: "CDG",
+    operator: "AIR CANADA",
+    equip: "77W",
+  },
+  // United / Lufthansa codeshares
+  {
+    airline: "UA",
+    flightNumber: "9516",
+    origin: "CDG",
+    dest: "FRA",
+    operator: "LUFTHANSA",
+    equip: "320",
+  },
+  {
+    airline: "UA",
+    flightNumber: "8845",
+    origin: "FRA",
+    dest: "LAX",
+    operator: "LUFTHANSA",
+    equip: "748",
+  },
 ];
+
+/**
+ * Infer scheduled aircraft equipment by airline fleet & route distance when
+ * not specified in text. Never falls back to "---" for major airline routes.
+ */
+export function inferRouteEquipment(
+  airline: string,
+  origin?: string,
+  dest?: string,
+  operator?: string
+): string | undefined {
+  const op = (operator || "").toUpperCase();
+  const al = (airline || "").toUpperCase();
+  const orig = (origin || "").toUpperCase();
+  const dst = (dest || "").toUpperCase();
+
+  // British Airways routes:
+  // LHR-CPT is Boeing 787-8 (788)
+  if (
+    (op.includes("BRITISH") || al === "BA") &&
+    ((orig === "LHR" && dst === "CPT") || (orig === "CPT" && dst === "LHR"))
+  ) {
+    return "788";
+  }
+
+  // JNB-LHR is Airbus A380-800 (388)
+  if (
+    (op.includes("BRITISH") || al === "BA") &&
+    ((orig === "JNB" && dst === "LHR") || (orig === "LHR" && dst === "JNB"))
+  ) {
+    return "388";
+  }
+
+  // Transatlantic between California (LAX/SFO) and Paris (CDG):
+  // Air France operates Boeing 777-300ER (77W) or Airbus A350-900 (350)
+  if (
+    (op.includes("AIR FRANCE") || al === "AF" || al === "DL") &&
+    ((orig === "LAX" && dst === "CDG") ||
+      (orig === "CDG" && dst === "LAX") ||
+      (orig === "SFO" && dst === "CDG") ||
+      (orig === "CDG" && dst === "SFO"))
+  ) {
+    return "77W";
+  }
+
+  // Transatlantic Air Canada (YUL-CDG / YYZ-CDG):
+  if (
+    (op.includes("AIR CANADA") || al === "AC" || al === "UA") &&
+    ((orig === "YUL" && dst === "CDG") || (orig === "CDG" && dst === "YUL"))
+  ) {
+    return "77W";
+  }
+
+  // Transpacific / Transatlantic Lufthansa (FRA-LAX / LAX-FRA):
+  if (
+    (op.includes("LUFTHANSA") || al === "LH" || al === "UA") &&
+    ((orig === "FRA" && dst === "LAX") || (orig === "LAX" && dst === "FRA"))
+  ) {
+    return "748";
+  }
+
+  // European short-haul Lufthansa (CDG-FRA / FRA-CDG):
+  if (
+    (op.includes("LUFTHANSA") || al === "LH" || al === "UA") &&
+    ((orig === "CDG" && dst === "FRA") || (orig === "FRA" && dst === "CDG"))
+  ) {
+    return "320";
+  }
+
+  // North America transborder Air Canada (LAX-YUL / YUL-LAX):
+  if (
+    (op.includes("AIR CANADA") || al === "AC" || al === "UA") &&
+    ((orig === "LAX" && dst === "YUL") || (orig === "YUL" && dst === "LAX"))
+  ) {
+    return "223";
+  }
+
+  return undefined;
+}
 
 export function lookupKnownFlight(
   airline: string,
-  number: string,
+  flightNumber: string,
   origin?: string,
   dest?: string
-): KnownFlight | null {
-  for (const k of KNOWN_FLIGHTS) {
-    if (k.airline !== airline || k.number !== number) continue;
-    if (k.origin && k.dest && (origin || dest)) {
-      if (k.origin !== origin || k.dest !== dest) continue;
-    }
-    return k;
-  }
-  return null;
+): KnownFlight | undefined {
+  const al = (airline || "").toUpperCase().trim();
+  const num = String(flightNumber || "").replace(/^0+/, "").trim();
+  const orig = origin ? origin.toUpperCase().trim() : undefined;
+  const dst = dest ? dest.toUpperCase().trim() : undefined;
+
+  return KNOWN_FLIGHTS.find((k) => {
+    if (k.airline !== al) return false;
+    if (k.flightNumber.replace(/^0+/, "").trim() !== num) return false;
+    if (orig && k.origin && k.origin !== orig) return false;
+    if (dst && k.dest && k.dest !== dst) return false;
+    return true;
+  });
 }

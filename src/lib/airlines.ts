@@ -35,24 +35,6 @@ const NAME_TO_CODE: Record<string, string> = {
   "allegiant air": "G4",
   allegiant: "G4",
   "american eagle": "AA",
-  "horizon air": "QX",
-  horizon: "QX",
-  skywest: "OO",
-  "skywest airlines": "OO",
-  "air canada express": "ACX",
-  jazz: "QK",
-  "air canada jazz": "QK",
-  "jazz aviation": "QK",
-  "envoy air": "MQ",
-  envoy: "MQ",
-  "psa airlines": "OH",
-  "piedmont airlines": "PT",
-  piedmont: "PT",
-  "mesa airlines": "YV",
-  "republic airways": "YX",
-  "endeavor air": "9E",
-  "gojet airlines": "G7",
-  "commuteair": "C5",
   "breeze airways": "MX",
   breeze: "MX",
   "frontier airlines": "F9",
@@ -321,28 +303,6 @@ export function airlineFromName(name: string): string | null {
     if (n === key) return NAME_TO_CODE[key];
   }
   return null;
-}
-
-/** Regional/connection brands that are NOT the marketing carrier even when
- *  the parent name matches — "Operated by Air Canada Express" on an AC
- *  segment still prints, so these map to a synthetic compare token that can
- *  never equal a real marketing code. */
-const REGIONAL_BRANDS = new Set([
-  "air canada express",
-  "united express",
-  "delta connection",
-  "american eagle",
-  "qantaslink",
-]);
-
-/** Code used ONLY for operated-by comparisons: a real IATA code when the
- *  name is known; a stable synthetic token for regional brands; null when
- *  the operator name is unknown. */
-export function airlineCompareCodeFromName(name: string): string | null {
-  const n = name.toLowerCase().replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
-  if (!n) return null;
-  if (REGIONAL_BRANDS.has(n)) return `~${n}`;
-  return airlineFromName(n);
 }
 
 export function isAirlineCode(code: string): boolean {
