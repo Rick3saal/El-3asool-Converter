@@ -26,7 +26,10 @@ import {
   lookupCabinForClass,
   provisionalCabinFor,
 } from "./cabinClasses";
-import { lookupKnownFlight } from "./knownFlights";
+import {
+  inferRouteEquipment,
+  lookupKnownFlight,
+} from "./knownFlights";
 
 const DEFAULT_CLASS: Record<Cabin, string> = {
   FIRST: "I",
@@ -145,27 +148,6 @@ export function convertFlights(
       }
     }
 
-    /* Equipment lookup */
-    const directEquip = (f.equip && f.equip !== "---")
-      ? f.equip
-      : (f.equipRaw ? parseExplicitAircraftString(f.equipRaw, f.airline) : null);
-    let learnedEquip = !directEquip ? lookupLearnedAircraft(f.equipRaw) : undefined;
-    let equip = directEquip || learnedEquip;
-    if (!equip || equip === "---") {
-      const known = lookupKnownFlight(f.airline, f.number, f.origin, f.dest);
-      if (known?.equip) equip = known.equip;
-    }
-    if (!equip || equip === "---") {
-      equip = "---";
-      if (!failedEquipmentFlights.includes(label)) {
-        failedEquipmentFlights.push(label);
-      }
-      issues.push({
-        level: "warn",
-        text: `equipment not found for ${label}${route}.`,
-      });
-    }
-
     /* Operator lookup */
     let operatedBy = f.operatedBy;
     if (!operatedBy) {
@@ -182,13 +164,38 @@ export function convertFlights(
       });
     }
 
+    /* Equipment lookup */
+    const directEquip = (f.equip && f.equip !== "---")
+      ? f.equip
+      : (f.equipRaw ? parseExplicitAircraftString(f.equipRaw, f.airline) : null);
+    let learnedEquip = !directEquip ? lookupLearnedAircraft(f.equipRaw) : undefined;
+    let equip = directEquip || learnedEquip;
+    if (!equip || equip === "---") {
+      const known = lookupKnownFlight(f.airline, f.number, f.origin, f.dest);
+      if (known?.equip) equip = known.equip;
+    }
+    if (!equip || equip === "---") {
+      const inferred = inferRouteEquipment(f.airline, f.origin, f.dest, operatedBy || f.operatedBy);
+      if (inferred) equip = inferred;
+    }
+    if (!equip || equip === "---") {
+      equip = "---";
+      if (!failedEquipmentFlights.includes(label)) {
+        failedEquipmentFlights.push(label);
+      }
+      issues.push({
+        level: "warn",
+        text: `equipment not found for ${label}${route}.`,
+      });
+    }
+
     const elapsed = resolveElapsed(f.origin!, f.dest!, f.dep!, f.arr!, f.elapsed);
     // Note: "duration not stated in the source" warning removed per requirement 6
 
     segments.push({
       airline: f.airline,
       num: displayFlightNumber(f.number, f.airline),
-      date: { day: f.date!.day, month: f.date!.month },
+      date: { day: f.date!.day, month: f.date!.month, raw: f.date!.raw },
       origin: f.origin!,
       dest: f.dest!,
       dep: f.dep!,

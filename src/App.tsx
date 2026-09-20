@@ -1039,9 +1039,8 @@ export default function App() {
                       value={ai.model}
                       onChange={(e) => updateAi({ model: e.target.value })}
                     >
-                      <option value="gemini-2.5-flash">gemini-2.5-flash (Fast & recommended)</option>
+                      <option value="gemini-1.5-flash">gemini-1.5-flash (Fast & recommended)</option>
                       <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-                      <option value="gemini-1.5-flash">gemini-1.5-flash</option>
                       <option value="gemini-1.5-pro">gemini-1.5-pro</option>
                     </select>
                   ) : ai.provider === "openai" ? (

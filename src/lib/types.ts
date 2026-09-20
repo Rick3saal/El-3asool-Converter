@@ -3,9 +3,10 @@
 export type Cabin = "FIRST" | "BUSINESS" | "PREMIUM" | "ECONOMY";
 
 export interface ParsedDate {
-  day: number; // 1-31, never zero-padded on output
+  day: number; // 1-31
   month: number; // 1-12
   year?: number;
+  raw?: string;
 }
 
 export type Direction = "OUT" | "IN";

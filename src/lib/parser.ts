@@ -68,6 +68,7 @@ interface Tok {
   end: number;
   day?: number;
   month?: number;
+  raw?: string;
   min?: number;
   bare?: boolean;
   chain?: string[];
@@ -177,7 +178,7 @@ function tokenize(text: string): { toks: Tok[]; opbyRanges: Array<[number, numbe
   while ((m = sabreDateRe.exec(text)) !== null) {
     const month = MONTHS[m[2].toLowerCase()];
     const day = parseInt(m[1], 10);
-    push({ kind: "DATE", start: m.index, end: m.index + m[0].length, month, day });
+    push({ kind: "DATE", start: m.index, end: m.index + m[0].length, month, day, raw: (m[1] + m[2]).toUpperCase() });
   }
   const numDateRe = /\b(\d{1,2})[/.](\d{1,2})[/.](\d{2,4})\b/g;
   while ((m = numDateRe.exec(text)) !== null) {
@@ -961,7 +962,7 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
         depTok = dateToks.slice().sort((a, b) => tokDist(a, core) - tokDist(b, core))[0];
       }
       if (depTok) {
-        w.date = { day: depTok.day!, month: depTok.month! };
+        w.date = { day: depTok.day!, month: depTok.month!, raw: depTok.raw };
       }
       if (arrDateTok && w.date) {
         const diff = dateGapDays(w.date, { day: arrDateTok.day!, month: arrDateTok.month! });
@@ -975,7 +976,7 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
         .filter((t) => t.kind === "DATE" && t.end <= core.start && t.month && t.day)
         .sort((a, b) => b.start - a.start);
       if (before.length > 0 && core.start - before[0].end < 420) {
-        w.date = { day: before[0].day!, month: before[0].month! };
+        w.date = { day: before[0].day!, month: before[0].month!, raw: before[0].raw };
       }
     }
 

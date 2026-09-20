@@ -191,7 +191,8 @@ AIR FRANCE &&`;
 const rDl = convert(dl8727Text, null);
 assert(rDl.segments.length === 1, "DL 8727 parsed");
 assert(rDl.segments[0].operatedBy === "AIR FRANCE", "Operator resolved from AIR FRANCE && line");
-assert(rDl.segments[0].equip === "777", "Equipment resolved via known flights");
+assert(rDl.segments[0].equip === "77W", "Equipment resolved as 77W");
+assert(rDl.itinerary.includes("02MAR"), "02MAR formatted with leading zero");
 assert(rDl.itinerary.includes("*LAX-CDG OPERATED BY AIR FRANCE"), "Emits operated-by line for Air France");
 assert(!rDl.itinerary.includes("---"), "Output does not contain --- equipment");
 
@@ -208,7 +209,7 @@ assert(rUa.segments.length === 4, "All 4 UA codeshare flights parsed");
 assert(rUa.segments[0].operatedBy === "AIR CANADA", "UA 8466 operator is AIR CANADA");
 assert(rUa.segments[0].equip === "223", "UA 8466 equip resolved");
 assert(rUa.segments[1].operatedBy === "AIR CANADA", "UA 8062 operator is AIR CANADA");
-assert(rUa.segments[1].equip === "777", "UA 8062 equip resolved");
+assert(rUa.segments[1].equip === "77W", "UA 8062 equip resolved");
 assert(Boolean(rUa.segments[2].operatedBy?.includes("LUFTHANSA")), "UA 9516 operator is LUFTHANSA");
 assert(rUa.segments[2].equip === "320", "UA 9516 equip resolved");
 assert(Boolean(rUa.segments[3].operatedBy?.includes("LUFTHANSA")), "UA 8845 operator is LUFTHANSA");

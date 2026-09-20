@@ -9,10 +9,10 @@
  *
  * The user supplies their own API key, stored only in this browser.
  */
-import type { Cabin, ConverterResult, Issue, RawFlight, Segment } from "./types";
+import type { Cabin, ConverterResult, Issue, ParsedDate, RawFlight, Segment } from "./types";
 import { timeToMinutes } from "./aiTime";
 import { findAircraftTokens, parseExplicitAircraftString } from "./aircraft";
-import { lookupKnownFlight } from "./knownFlights";
+import { inferRouteEquipment, lookupKnownFlight } from "./knownFlights";
 
 export type AiProvider = "gemini" | "openai" | "custom";
 
@@ -35,22 +35,20 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
 export function defaultModelFor(provider: AiProvider): string {
   if (provider === "openai") return "gpt-4o-mini";
   if (provider === "custom") return "gpt-4o-mini";
-  return "gemini-2.0-flash";
+  return "gemini-1.5-flash";
 }
 
 export function sanitizeModel(provider: AiProvider, model: string): string {
   const m = (model || "").trim();
   if (provider === "gemini") {
     const valid = [
-      "gemini-2.5-flash",
-      "gemini-2.0-flash",
       "gemini-1.5-flash",
+      "gemini-2.0-flash",
       "gemini-1.5-pro",
       "gemini-2.0-pro-exp-02-05",
     ];
     if (valid.includes(m)) return m;
-    // Known user typos or invalid model names (e.g. "gemini-3.6-flash")
-    return "gemini-2.0-flash";
+    return "gemini-1.5-flash";
   }
   if (provider === "openai") {
     const valid = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"];
@@ -167,7 +165,7 @@ const MONTHS_ABBR: Record<string, number> = {
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
 };
 
-function parseDateField(d: AiFlightJson["date"]): { day: number; month: number } | null {
+function parseDateField(d: AiFlightJson["date"]): ParsedDate | null {
   if (!d) return null;
   if (typeof d === "object") {
     const day = Number(d.day);
@@ -175,12 +173,15 @@ function parseDateField(d: AiFlightJson["date"]): { day: number; month: number }
     if (day >= 1 && day <= 31 && month >= 1 && month <= 12) return { day, month };
     return null;
   }
-  // strings like "9NOV", "Nov 9", "11/09", "2025-11-09"
+  // strings like "02MAR", "9NOV", "Nov 9", "11/09", "2025-11-09"
   const s = String(d).trim();
   let m = /^(\d{1,2})\s*([A-Za-z]{3,})/.exec(s);
   if (m) {
     const mo = MONTHS_ABBR[m[2].slice(0, 3).toLowerCase()];
-    if (mo) return { day: parseInt(m[1], 10), month: mo };
+    if (mo) {
+      const raw = m[1].length === 2 ? `${m[1]}${m[2].slice(0, 3).toUpperCase()}` : undefined;
+      return { day: parseInt(m[1], 10), month: mo, raw };
+    }
   }
   m = /^([A-Za-z]{3,})\.?\s*(\d{1,2})/.exec(s);
   if (m) {
@@ -242,6 +243,10 @@ export function toRawFlights(json: { flights?: AiFlightJson[] }): RawFlight[] {
     if (known) {
       if (!operatedBy) operatedBy = known.operator;
       if (!equip || equip === "---") equip = known.equip;
+    }
+    if (!equip || equip === "---") {
+      const inferred = inferRouteEquipment(airline, origin, dest, operatedBy);
+      if (inferred) equip = inferred;
     }
 
     const hasStarFlag =
@@ -305,64 +310,68 @@ function isRetryableError(err: unknown): boolean {
 }
 
 async function callGemini(text: string, s: AiSettings): Promise<string> {
-  const modelName = sanitizeModel("gemini", s.model);
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    modelName
-  )}:generateContent?key=${encodeURIComponent(s.apiKey)}`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 25000);
-  try {
-    // 1. Primary attempt with Google Search grounding tool for live lookup of aircraft & operators
-    const searchBody = {
-      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: [{ role: "user", parts: [{ text }] }],
-      tools: [{ googleSearch: {} }],
-      generationConfig: { temperature: 0 },
-    };
+  const primaryModel = sanitizeModel("gemini", s.model);
+  const modelsToTry = Array.from(new Set([primaryModel, "gemini-1.5-flash", "gemini-2.0-flash"]));
 
-    let res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify(searchBody),
-    });
+  let lastError: unknown;
+  for (const model of modelsToTry) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      model
+    )}:generateContent?key=${encodeURIComponent(s.apiKey)}`;
 
-    // 2. Fallback to standard json mode if googleSearch tool is unsupported or returns 400/404
-    if (!res.ok && res.status !== 429 && res.status !== 503) {
-      const fallbackModel = res.status === 404 ? "gemini-2.0-flash" : modelName;
-      const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-        fallbackModel
-      )}:generateContent?key=${encodeURIComponent(s.apiKey)}`;
-      const jsonBody = {
-        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [{ role: "user", parts: [{ text }] }],
-        generationConfig: { responseMimeType: "application/json", temperature: 0 },
-      };
-      const resFallback = await fetch(fallbackUrl, {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      // 1. Try with search grounding tool for live web flight data
+      let res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
-        body: JSON.stringify(jsonBody),
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          contents: [{ role: "user", parts: [{ text }] }],
+          tools: [{ googleSearch: {} }],
+          generationConfig: { temperature: 0 },
+        }),
       });
-      if (resFallback.ok) {
-        res = resFallback;
-      }
-    }
 
-    if (!res.ok) {
-      const errBody = await safeText(res);
-      const err = new Error(`Gemini ${res.status}: ${errBody}`);
-      (err as { status?: number }).status = res.status;
-      throw err;
+      // 2. If tools are unsupported on key or tier (400), try standard json mode
+      if (!res.ok && res.status === 400) {
+        res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+            contents: [{ role: "user", parts: [{ text }] }],
+            generationConfig: { responseMimeType: "application/json", temperature: 0 },
+          }),
+        });
+      }
+
+      if (res.ok) {
+        const data = await res.json();
+        const parts = data?.candidates?.[0]?.content?.parts;
+        const out = Array.isArray(parts) ? parts.map((p: { text?: string }) => p.text || "").join("") : "";
+        if (out) return out;
+      } else {
+        const errBody = await safeText(res);
+        lastError = new Error(`Gemini ${res.status} (${model}): ${errBody}`);
+        if (res.status === 429 || res.status === 503) {
+          throw lastError; // propagate for backoff retry
+        }
+      }
+    } catch (err) {
+      lastError = err;
+      if (isRetryableError(err)) {
+        throw err;
+      }
+    } finally {
+      clearTimeout(timer);
     }
-    const data = await res.json();
-    const parts = data?.candidates?.[0]?.content?.parts;
-    const out = Array.isArray(parts) ? parts.map((p: { text?: string }) => p.text || "").join("") : "";
-    if (!out) throw new Error("Gemini returned no content.");
-    return out;
-  } finally {
-    clearTimeout(timer);
   }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError || "Gemini extraction failed."));
 }
 
 async function callOpenAI(text: string, s: AiSettings): Promise<string> {
