@@ -28,27 +28,32 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   enabled: false,
   provider: "gemini",
   apiKey: "",
-  model: "gemini-2.0-flash",
+  model: "gemini-2.5-flash",
   baseUrl: "",
 };
 
 export function defaultModelFor(provider: AiProvider): string {
   if (provider === "openai") return "gpt-4o-mini";
   if (provider === "custom") return "gpt-4o-mini";
-  return "gemini-1.5-flash";
+  return "gemini-2.5-flash";
 }
 
 export function sanitizeModel(provider: AiProvider, model: string): string {
   const m = (model || "").trim();
   if (provider === "gemini") {
     const valid = [
-      "gemini-1.5-flash",
-      "gemini-2.0-flash",
-      "gemini-1.5-pro",
-      "gemini-2.0-pro-exp-02-05",
+      "gemini-2.5-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-3.7-flash",
+      "gemini-3.5-flash",
+      "gemini-3-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-3.6-flash",
+      "gemini-3.8-flash",
+      "gemini-2.5-flash-lite",
     ];
     if (valid.includes(m)) return m;
-    return "gemini-1.5-flash";
+    return "gemini-2.5-flash";
   }
   if (provider === "openai") {
     const valid = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"];
@@ -311,7 +316,17 @@ function isRetryableError(err: unknown): boolean {
 
 async function callGemini(text: string, s: AiSettings): Promise<string> {
   const primaryModel = sanitizeModel("gemini", s.model);
-  const modelsToTry = Array.from(new Set([primaryModel, "gemini-1.5-flash", "gemini-2.0-flash"]));
+  const modelsToTry = Array.from(
+    new Set([
+      primaryModel,
+      "gemini-2.5-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-3.7-flash",
+      "gemini-3.5-flash",
+      "gemini-3-flash",
+      "gemini-3.1-flash-lite",
+    ])
+  );
 
   let lastError: unknown;
   for (const model of modelsToTry) {
@@ -357,7 +372,12 @@ async function callGemini(text: string, s: AiSettings): Promise<string> {
       } else {
         const errBody = await safeText(res);
         lastError = new Error(`Gemini ${res.status} (${model}): ${errBody}`);
-        if (res.status === 429 || res.status === 503) {
+        // If 404 (model not found/retired) or 429 (rate limit exceeded on this model),
+        // try the next active model in the fallback list before giving up.
+        if (res.status === 404 || res.status === 429) {
+          continue;
+        }
+        if (res.status === 503) {
           throw lastError; // propagate for backoff retry
         }
       }

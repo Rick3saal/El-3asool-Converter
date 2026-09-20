@@ -980,7 +980,14 @@ export default function App() {
 
           {aiError && (
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-400/30 bg-rose-400/[0.08] p-3 text-xs text-rose-300">
-              <p className="min-w-0 flex-1">{aiError}</p>
+              <div className="min-w-0 flex-1 space-y-1">
+                <p>{aiError}</p>
+                {(aiError.includes("429") || aiError.toLowerCase().includes("rate limit") || aiError.toLowerCase().includes("quota")) && (
+                  <p className="text-[11.5px] text-amber-200/90">
+                    Tip: On free Google AI Studio keys, <strong>Gemini 3.5 Flash Lite</strong> offers 500 requests per day (vs 20/day on regular Flash). You can select it in the AI Assist panel above.
+                  </p>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => void runAi(text)}
@@ -1039,9 +1046,13 @@ export default function App() {
                       value={ai.model}
                       onChange={(e) => updateAi({ model: e.target.value })}
                     >
-                      <option value="gemini-1.5-flash">gemini-1.5-flash (Fast & recommended)</option>
-                      <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-                      <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+                      <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommended - fast & active)</option>
+                      <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (High quota - 500 RPD)</option>
+                      <option value="gemini-3.7-flash">Gemini 3.7 Flash</option>
+                      <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+                      <option value="gemini-3-flash">Gemini 3 Flash</option>
+                      <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (500 RPD)</option>
+                      <option value="gemini-3.6-flash">Gemini 3.6 Flash</option>
                     </select>
                   ) : ai.provider === "openai" ? (
                     <select
