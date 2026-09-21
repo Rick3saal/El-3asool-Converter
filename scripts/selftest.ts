@@ -549,6 +549,108 @@ Duration: 13 hr 30 min`
   checkTrue("single outbound, no inbound", r.outbound === "0QR701J5DECDOHJFKNN1" && r.inbound === "", r.outbound + " || " + r.inbound);
 }
 
+/* ============ Style B heading split — JFK-DEL-AMD / AMD-BOM-JFK (2+2) ============ */
+{
+  console.log("\n[Style B] JFK→AMD via DEL, AMD→JFK via BOM — headings define split");
+  const input = `New York (JFK) to Ahmedabad (AMD) on Tue, Oct 27
+
+New York (JFK) to Delhi (DEL) on Tue, Oct 27
+12:55 PM to 1:35 PM on Wed, Oct 28 (15h 10m)
+Air India 102
+Airbus A350
+Business (J)
+
+Layover in DEL (3h 5m)
+
+Delhi (DEL) to Ahmedabad (AMD) on Wed, Oct 28
+4:40 PM to 6:20 PM (1h 40m)
+Air India 1120
+Airbus A320neo
+Business (J)
+
+Ahmedabad (AMD) to New York (JFK) on Fri, Feb 26
+
+Ahmedabad (AMD) to Mumbai (BOM) on Fri, Feb 26
+12:00 PM to 1:35 PM (1h 35m)
+Air India 2848
+Airbus A320neo
+Business (J)
+
+Layover in BOM (10h 50m)
+
+Mumbai (BOM) to New York (JFK) on Sat, Feb 27
+12:25 AM to 6:55 AM on Sat, Feb 27 (17h 0m)
+Air India 119
+Boeing 777
+Business (J)`;
+  const r = convert(input, "BUSINESS");
+  check("outbound (AI102 + AI1120)", r.outbound, "0AI102J27OCTJFKDELNN1§0AI1120J28OCTDELAMDNN1");
+  check("inbound (AI2848 + AI119)", r.inbound, "0AI2848J26FEBAMDBOMNN1§0AI119J27FEBBOMJFKNN1");
+}
+
+/* ============ Style B heading split — JFK-LHR-BOM-AMD / AMD-DEL-LHR-JFK (3+3) ============ */
+{
+  console.log("\n[Style B] JFK→AMD via LHR+BOM, AMD→JFK via DEL+LHR — 3+3 split");
+  const input = `New York (JFK) to Ahmedabad (AMD) on Wed, Oct 28
+
+New York (JFK) to London (LHR) on Wed, Oct 28
+9:05 PM to 8:10 AM (7h 5m)
+British Airways 116
+Boeing 777
+Business (R)
+
+Layover in LHR (1h 25m)
+
+London (LHR) to Mumbai (BOM) on Thu, Oct 29
+9:35 AM to 12:15 AM (9h 10m)
+British Airways 139
+Boeing 777
+Business (R)
+
+Layover in BOM (4h 0m)
+
+Mumbai (BOM) to Ahmedabad (AMD) on Fri, Oct 30
+4:15 AM to 5:35 AM (1h 20m)
+British Airways 7046 (operated by Indigo)
+Airbus A320
+Economy (L)
+
+Ahmedabad (AMD) to New York (JFK) on Mon, Mar 1
+
+Ahmedabad (AMD) to Delhi (DEL) on Mon, Mar 1
+10:00 PM to 11:35 PM (1h 35m)
+British Airways 7048 (operated by Indigo)
+Airbus A321
+Economy (L)
+
+Layover in DEL (3h 45m)
+
+Delhi (DEL) to London (LHR) on Tue, Mar 2
+3:20 AM to 7:40 AM on Tue, Mar 2 (9h 50m)
+British Airways 142
+Airbus A350
+Business (I)
+
+Layover in LHR (1h 55m)
+
+London (LHR) to New York (JFK) on Tue, Mar 2
+9:35 AM to 12:35 PM (8h 0m)
+British Airways 175
+Boeing 777
+Business (I)`;
+  const r = convert(input);
+  check(
+    "outbound 3: BA116 + BA139 + BA7046",
+    r.outbound,
+    "0BA116R28OCTJFKLHRNN1§0BA139R29OCTLHRBOMNN1§0BA7046L30OCTBOMAMDNN1"
+  );
+  check(
+    "inbound 3: BA7048 + BA142 + BA175",
+    r.inbound,
+    "0BA7048L1MARAMDDELNN1§0BA142I2MARDELLHRNN1§0BA175I2MARLHRJFKNN1"
+  );
+}
+
 console.log(`\n==== ${pass} passed, ${fail} failed ====`);
 if (failures.length) {
   console.log("Failures:", failures.join(" | "));

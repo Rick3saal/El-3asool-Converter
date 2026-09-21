@@ -47,6 +47,10 @@ export interface RawFlight {
   /** when a same-number pair was kept separate because of a layover */
   layover?: boolean;
   direction?: Direction;
+  /** Optional direction hint populated by the parser when the source text has
+   *  explicit section headings ("X to Y on <date>", "Return", ...). Used by
+   *  splitDirections as the primary split signal when present. */
+  directionHint?: Direction;
 }
 
 /** A fully resolved, sellable Sabre segment */
