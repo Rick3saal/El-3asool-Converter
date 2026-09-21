@@ -468,6 +468,10 @@ interface Work {
   end: number;
   order: number;
   layover: boolean;
+  /** when a direction section heading ("JFK to AMD on ...", "Return",
+   *  "Inbound", etc.) precedes this flight, that heading's intent is stored
+   *  here so splitDirections can use it as the primary signal. */
+  directionHint?: "OUT" | "IN";
 }
 
 const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
@@ -481,8 +485,21 @@ function doy(d: ParsedDate): number {
 function dateGapDays(a: ParsedDate | undefined, b: ParsedDate | undefined): number | null {
   if (!a || !b) return null;
   let diff = doy(b) - doy(a);
-  if (diff < -300) diff += 365;
-  if (diff > 300) diff -= 365;
+  // Circular year wrap: itineraries often cross Dec/Jan or span several months
+  // across a year boundary (e.g. Oct → Feb the next year). Take the forward gap
+  // in both directions and pick the one that represents a forward-moving trip.
+  // A forward gap of -244 days (Oct 28 → Feb 26) really means +121 days.
+  if (diff < 0) {
+    const wrapped = diff + 365;
+    // Use wrapped when it's the natural interpretation: b is after a across a
+    // year boundary. Keep small negative gaps (negative meaning same-day wrap
+    // such as date misorder) so they still look like small/negative gaps.
+    if (wrapped <= 185) diff = wrapped;
+  } else if (diff > 185) {
+    // More than ~6 months forward is almost certainly backwards across a year
+    // boundary; keep it as negative so it never looks like the "largest gap".
+    diff -= 365;
+  }
   return diff;
 }
 
@@ -688,6 +705,109 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
     return paras[paras.length - 1];
   };
   cores.forEach((c, i) => paraOf(c.start).coreIdx.push(i));
+
+  /* ---- DIRECTION HEADING DETECTION ----
+   * A "heading paragraph" is a blank-line-delimited block that:
+   *   - contains NO flight core (airline + number), AND
+   *   - contains a ROUTE (two airport codes joined by "to"/"→"/"-") AND
+   *     a DATE (it announces a journey like "New York (JFK) to Ahmedabad
+   *     (AMD) on Tue, Oct 27"), OR contains a DIR word like "Return",
+   *     "Outbound", "Inbound".
+   * Heading paragraphs never own any flight; they just declare which
+   * direction the FOLLOWING flights belong to. The first heading that
+   * reverses the origin→dest of the first heading marks the start of the
+   * return journey. DIR("Return"/"Inbound") directly marks the return. */
+  interface Heading {
+    start: number;
+    end: number;
+    origin?: string;
+    dest?: string;
+    explicitIn?: boolean; // "Return" / "Inbound" word
+    explicitOut?: boolean; // "Outbound" / "Departure" word
+  }
+  const headings: Heading[] = [];
+  for (const pr of paras) {
+    if (pr.coreIdx.length > 0) continue; // paragraphs with flights can't be headings
+    const prToks = toks.filter(
+      (t) => t.start >= pr.start && t.end <= pr.end && t.kind !== "CITYCODE"
+    );
+    const hasRoute = prToks.some(
+      (t) => t.kind === "ROUTE" && t.chain && t.chain.length >= 2
+    );
+    const hasDate = prToks.some((t) => t.kind === "DATE" && t.month && t.day);
+    const hasTime = prToks.some((t) => t.kind === "TIME");
+    const hasCabin = prToks.some((t) => t.kind === "CABIN");
+    const hasAircraft = prToks.some((t) => t.kind === "AIRCRAFT");
+    const hasClass = prToks.some((t) => t.kind === "CLASS");
+    const hasLayover = prToks.some((t) => t.kind === "LAYOVER" || t.kind === "STOP");
+    const hasElapsed = prToks.some((t) => t.kind === "ELAPSED");
+    const hasDir = prToks.some((t) => t.kind === "DIR");
+    const dirTok = prToks.find((t) => t.kind === "DIR");
+    const dirText = dirTok ? text.slice(dirTok.start, dirTok.end).toLowerCase() : "";
+    const isReturnWord = /return|inbound|coming\s+back|returning/.test(dirText);
+    const isOutWord = /outbound|departure|going\s+there/.test(dirText);
+    // A route+date heading must be a clean summary: no times/cabins/aircraft/etc.
+    // (those would make it a flight's own block, not a section heading).
+    const isRouteHeading =
+      hasRoute &&
+      hasDate &&
+      !hasTime &&
+      !hasCabin &&
+      !hasAircraft &&
+      !hasClass &&
+      !hasLayover &&
+      !hasElapsed;
+    const isDirHeading = hasDir && !hasRoute && !hasTime && !hasCabin && !hasAircraft;
+    if (isRouteHeading || isDirHeading) {
+      const routeTok = prToks.find(
+        (t) => t.kind === "ROUTE" && t.chain && t.chain.length >= 2
+      );
+      headings.push({
+        start: pr.start,
+        end: pr.end,
+        origin: routeTok?.chain?.[0],
+        dest: routeTok?.chain?.[routeTok.chain.length - 1],
+        explicitIn: isReturnWord || (isDirHeading && isReturnWord),
+        explicitOut: isOutWord || (isDirHeading && isOutWord),
+      });
+    }
+  }
+
+  // Decide which heading is the return boundary. The first heading is OUT;
+  // any later heading that either (a) carries a Return/Inbound word, or
+  // (b) reverses the first heading's origin→dest (dest of first heading is
+  // this heading's origin, and origin of first heading is this heading's
+  // dest — i.e. we're heading back home), marks the IN start.
+  let returnStart = -1;
+  if (headings.length >= 1) {
+    const first = headings[0];
+    for (let hi = 1; hi < headings.length; hi++) {
+      const h = headings[hi];
+      if (h.explicitIn) { returnStart = h.start; break; }
+      if (
+        first.origin && first.dest &&
+        h.origin === first.dest && h.dest === first.origin
+      ) {
+        returnStart = h.start;
+        break;
+      }
+    }
+    // If only one heading exists, it's the outbound heading; no return split
+    // is defined by headings — fall back to heuristics later.
+  } else {
+    // No route/date heading, but there might still be a standalone "Return"
+    // DIR paragraph that was absorbed into a flight's paragraph due to
+    // missing blank lines. The DIR token is still in toks; treat any DIR
+    // position as a potential return boundary.
+    for (const dt of toks) {
+      if (dt.kind !== "DIR") continue;
+      const dtext = text.slice(dt.start, dt.end).toLowerCase();
+      if (/return|inbound|coming\s+back|returning/.test(dtext)) {
+        returnStart = dt.start;
+        break;
+      }
+    }
+  }
 
   /** owner of a token inside a paragraph that holds several flights */
   const ownerInsideParagraph = (t: Tok, pr: Para): number => {
@@ -1152,6 +1272,30 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
   }
 
   deduped.forEach((w, idx) => (w.order = idx));
+
+  /* Apply direction hints from detected headings: flights whose flight-number
+   * core appears AFTER the return-start heading are tagged IN; flights before
+   * that (and all flights if no return heading was found) are tagged OUT.
+   * Flights before ANY heading are also OUT (they precede the first header). */
+  if (returnStart > -1) {
+    for (const w of deduped) {
+      w.directionHint = w.start >= returnStart ? "IN" : "OUT";
+    }
+  } else if (headings.length >= 1) {
+    // First heading exists but no return heading: everything after the first
+    // heading is OUT (we only saw the outbound summary).
+    const firstHeadingEnd = headings[0].end;
+    for (const w of deduped) {
+      w.directionHint = "OUT";
+    }
+    // Preserve any stray flights before the first heading? They shouldn't be
+    // there in a well-formed paste, but if they exist don't silently retag
+    // them — leave them untagged so heuristics decide.
+    for (const w of deduped) {
+      if (w.start < firstHeadingEnd) delete w.directionHint;
+    }
+  }
+
   return { works: deduped, issues };
 }
 
@@ -1221,22 +1365,52 @@ export interface Directional {
   origin?: string;
   dest?: string;
   date?: ParsedDate;
+  /** Optional explicit direction hint supplied by the parser when the source
+   *  text contains a clear section heading ("X to Y on ...", "Return",
+   *  "Outbound", ...). When present, this is the primary split signal;
+   *  heuristics are used only as a fallback. */
+  directionHint?: "OUT" | "IN";
 }
 
 /**
- * Outbound vs inbound is decided from the actual routing. A new (return)
- * journey begins when:
- *   1. flights start retracing already-visited airports / return toward home,
- *   2. the journey resumes into a previously visited destination after a
+ * Outbound vs inbound is decided by the following priority order:
+ *
+ *   0. EXPLICIT HEADING HINTS ("X to Y on <date>", "Return", "Outbound",
+ *      "Inbound", ...). When flights are tagged with a directionHint, the
+ *      first flight whose hint flips from OUT to IN is the return start.
+ *      This is the primary signal because the pasted text itself declares
+ *      the journey boundary.
+ *   1. Largest ground gap (date turnaround) for round trips.
+ *   2. Routing backtrack / retrace / route break / same-city return.
+ *
+ * A new (return) journey begins when:
+ *   a. a section heading in the source text announces it (highest priority),
+ *   b. flights start retracing already-visited airports / return toward home,
+ *   c. the journey resumes into a previously visited destination after a
  *      multi-day gap, OR
- *   3. the pasted text holds two (or more) independent one-way journeys —
+ *   d. the pasted text holds two (or more) independent one-way journeys —
  *      the next flight's origin does NOT continue from the previous flight's
- *      destination (a routing break). This handles a MIA→MAD→LIS outbound
- *      followed by an unrelated LHR→YYZ "return": each top-level journey is
- *      its own directional group.
+ *      destination (a routing break).
  */
 export function splitDirections<T extends Directional>(items: T[]): { out: T[]; inn: T[] } {
   if (items.length === 0) return { out: [], inn: [] };
+
+  // 0) Heading-hint driven split. Walk the items and split at the first
+  //    transition from OUT→IN in the explicit hints. Hints that re-declare
+  //    OUT after an IN are ignored (the first IN stays the boundary).
+  const anyHint = items.some((f) => f.directionHint);
+  if (anyHint) {
+    let split = -1;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].directionHint === "IN") { split = i; break; }
+    }
+    if (split > 0) {
+      const out: T[] = [];
+      const inn: T[] = [];
+      items.forEach((w, i) => (i < split ? out.push(w) : inn.push(w)));
+      return { out, inn };
+    }
+  }
   const home = items[0].origin;
   const last = items[items.length - 1];
   const isRoundTrip = !!home && !!last.dest && last.dest === home;
