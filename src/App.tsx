@@ -235,7 +235,7 @@ function OutputCard({
     <section
       className={cn(
         "glass glass-hover fade-up group relative overflow-hidden rounded-2xl",
-        fill && "xl:flex xl:min-h-0 xl:flex-col"
+        fill && "lg:flex lg:min-h-0 lg:flex-col"
       )}
     >
       <div className="card-accent absolute inset-x-0 top-0 h-px opacity-70 transition-opacity duration-300 group-hover:opacity-100" />
@@ -257,7 +257,12 @@ function OutputCard({
         <CopyButton label="Copy" copied={copied} disabled={!has} onCopy={onCopy} />
       </header>
       {has ? (
-        <pre className="sabre-scroll overflow-x-auto whitespace-pre px-5 py-4 font-mono text-[12.5px] leading-[1.8] text-slate-100 selection:bg-honey/30 xl:min-h-0 xl:flex-1 xl:overflow-auto">
+        <pre
+          className={cn(
+            "sabre-scroll overflow-x-auto whitespace-pre px-5 py-4 font-mono text-[12.5px] leading-[1.8] text-slate-100 selection:bg-honey/30 lg:min-h-0 lg:flex-1 lg:overflow-auto",
+            fill && "lg:text-[11.5px] min-[1800px]:text-[12.5px]"
+          )}
+        >
           {text}
         </pre>
       ) : (
@@ -656,7 +661,7 @@ export default function App() {
   const processing = ocrStatus === "processing";
 
   return (
-    <div className="relative flex min-h-screen flex-col overflow-x-hidden xl:h-[100dvh] xl:min-h-0 xl:overflow-hidden">
+    <div className="relative flex min-h-screen flex-col overflow-x-hidden lg:h-[100dvh] lg:min-h-0 lg:overflow-hidden">
       {/* backdrop */}
       <div className="pointer-events-none fixed inset-0">
         <div className="app-grid absolute inset-0" />
@@ -668,7 +673,7 @@ export default function App() {
       </div>
 
       {/* ============ compact top rail — one row on large screens ============ */}
-      <header className="relative hidden shrink-0 items-center gap-4 border-b border-white/[0.07] bg-[#05070d]/60 px-4 py-2 backdrop-blur-md lg:flex xl:px-6">
+      <header className="relative hidden shrink-0 items-center gap-4 border-b border-white/[0.07] bg-[#05070d]/60 px-4 py-2 backdrop-blur-md lg:flex lg:px-6">
         <div className="flex min-w-0 shrink-0 items-center gap-2.5">
           <span className="glass flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-lg">🍯</span>
           <div className="min-w-0">
@@ -682,17 +687,17 @@ export default function App() {
         </div>
 
         <div className="flex min-w-0 flex-1 items-center justify-center gap-3">
-          <span className="gold-rule hidden h-px flex-1 xl:block" />
+          <span className="gold-rule hidden h-px flex-1 lg:block" />
           <span className="text-[10px] text-honey/60">✦</span>
           <div
             dir="rtl"
             lang="ar"
-            className="font-arabic whitespace-nowrap px-1 text-[1.05rem] leading-7 text-amber-50 [text-shadow:0_2px_18px_rgba(245,197,24,0.25)] xl:text-[1.2rem]"
+            className="font-arabic whitespace-nowrap px-1 text-[1.05rem] leading-7 text-amber-50 [text-shadow:0_2px_18px_rgba(245,197,24,0.25)] lg:text-[1.2rem]"
           >
             اللَّهُمَّ صَلِّ وَسَلِّمْ عَلَى نَبِيِّنَا مُحَمَّدٍ
           </div>
           <span className="text-[10px] text-honey/60">✦</span>
-          <span className="gold-rule hidden h-px flex-1 xl:block" />
+          <span className="gold-rule hidden h-px flex-1 lg:block" />
         </div>
 
         <div className="flex shrink-0 items-center gap-3">
@@ -706,7 +711,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="relative mx-auto flex w-full max-w-5xl flex-col px-4 pb-20 pt-9 sm:px-6 xl:min-h-0 xl:max-w-none xl:flex-1 xl:px-5 xl:pb-4 xl:pt-4 2xl:px-6">
+      <main className="relative mx-auto flex w-full max-w-5xl flex-col px-4 pb-20 pt-9 sm:px-6 lg:min-h-0 lg:max-w-none lg:flex-1 lg:px-5 lg:pb-4 lg:pt-4 2xl:px-6">
         {/* ============ header (small screens) ============ */}
         <header className="text-center lg:hidden">
           {/* Arabic remembrance — framed, centered, RTL */}
@@ -758,10 +763,10 @@ export default function App() {
         </header>
 
         {/* ============ workspace — paste left, answers right ============ */}
-        <div className="mt-9 flex flex-col gap-4 xl:mt-0 xl:grid xl:min-h-0 xl:flex-1 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] xl:grid-rows-[minmax(0,1fr)] xl:items-stretch">
+        <div className="mt-9 flex flex-col gap-4 lg:mt-0 lg:grid lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)] lg:grid-rows-[minmax(0,1fr)] lg:items-stretch">
           {/* ============ input card (left pane) ============ */}
-          <section className="glass fade-up flex flex-col rounded-2xl xl:min-h-0 xl:overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-4 sm:px-5 sm:pt-5 xl:shrink-0">
+          <section className="glass fade-up flex flex-col rounded-2xl lg:min-h-0 lg:overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-4 sm:px-5 sm:pt-5 lg:shrink-0">
             <h2 className="flex items-center gap-2 text-[11px] font-bold tracking-[0.25em] text-slate-300">
               <span className="text-honey/70">❯</span>
               PASTE ITINERARY — TEXT OR SCREENSHOT
@@ -802,12 +807,12 @@ export default function App() {
             </div>
 
             {/* scrollable paste area — toolbar stays pinned, the box fills the pane */}
-            <div className="sabre-scroll px-4 pb-4 pt-3.5 sm:px-5 sm:pb-5 xl:flex xl:min-h-0 xl:flex-1 xl:flex-col xl:overflow-y-auto">
+            <div className="sabre-scroll px-4 pb-4 pt-3.5 sm:px-5 sm:pb-5 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-y-auto">
             <div
               onDragOver={(e) => e.preventDefault()}
             onDrop={onDrop}
             className={cn(
-              "relative rounded-xl border transition-all duration-300 xl:flex xl:min-h-[190px] xl:flex-1 xl:flex-col",
+              "relative rounded-xl border transition-all duration-300 lg:flex lg:min-h-[190px] lg:flex-1 lg:flex-col",
               processing
                 ? "border-honey/45 bg-honey/[0.04]"
                 : "border-white/10 bg-slate-950/70 focus-within:border-honey/55 focus-within:shadow-[0_0_0_4px_rgba(245,197,24,0.07)]"
@@ -819,7 +824,7 @@ export default function App() {
               onChange={(e) => setText(e.target.value)}
               spellCheck={false}
               placeholder={"Paste a flight itinerary here…\n\nText works: ⌘V / Ctrl+V\nScreenshots work too: ⌘V / Ctrl+V directly in this box\n\nOr drag & drop an image."}
-              className="sabre-scroll block min-h-[190px] w-full resize-y rounded-xl bg-transparent p-4 font-mono text-[13px] leading-relaxed text-slate-100 placeholder:text-slate-600 focus:outline-none xl:min-h-0 xl:flex-1 xl:resize-none"
+              className="sabre-scroll block min-h-[190px] w-full resize-y rounded-xl bg-transparent p-4 font-mono text-[13px] leading-relaxed text-slate-100 placeholder:text-slate-600 focus:outline-none lg:min-h-0 lg:flex-1 lg:resize-none"
             />
 
             {/* OCR overlay */}
@@ -1035,7 +1040,7 @@ export default function App() {
 
             {/* ============ issues — left pane, under the paste box ============ */}
             {(showIssues.length > 0 || infoIssue) && (
-              <div className="mt-3 space-y-2 xl:shrink-0">
+              <div className="mt-3 space-y-2 lg:shrink-0">
                 {showIssues.map((issue, idx) => (
                   <IssueRow key={idx} issue={issue} />
                 ))}
@@ -1045,7 +1050,7 @@ export default function App() {
 
             {/* ---- review & edit flights ---- */}
             {liveResult && liveResult.hasOutput && (
-              <div className="mt-3 space-y-3 xl:shrink-0">
+              <div className="mt-3 space-y-3 lg:shrink-0">
                 <FlightEditor
                   open={editorOpen}
                   onToggle={() => setEditorOpen((v) => !v)}
@@ -1077,10 +1082,10 @@ export default function App() {
           </section>
 
           {/* ============ answers (right pane) ============ */}
-          <section className="flex flex-col gap-4 xl:min-h-0 xl:gap-3">
+          <section className="flex flex-col gap-4 lg:min-h-0 lg:gap-3">
             {liveResult && liveResult.hasOutput ? (
               <>
-                <div className="flex flex-wrap items-center justify-center gap-2 xl:shrink-0 xl:justify-between">
+                <div className="flex flex-wrap items-center justify-center gap-2 lg:shrink-0 lg:justify-between">
                   <h2 className="flex items-center gap-2 text-[11px] font-bold tracking-[0.25em] text-slate-300">
                     <span className="text-honey/70">❯</span>
                     SABRE OUTPUT
@@ -1101,7 +1106,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-2 xl:grid-rows-2 xl:gap-3">
+                <div className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-2 lg:grid-rows-2 lg:gap-3">
                   <OutputCard
                     fill
                     title="SABRE ITINERARY"
@@ -1169,7 +1174,7 @@ export default function App() {
           </section>
         </div>
 
-        <footer className="mt-12 pb-4 text-center xl:hidden">
+        <footer className="mt-12 pb-4 text-center lg:hidden">
           <div className="gold-rule mx-auto mb-4 h-px w-40 opacity-50" />
           <p className="text-[10.5px] tracking-wide text-slate-600">
             El 3asool Converter 🍯 · SABRE / GDS · Made by{" "}
