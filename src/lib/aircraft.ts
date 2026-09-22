@@ -352,6 +352,14 @@ export function findAircraftTokens(text: string): AircraftToken[] {
     push(equip, m[0], m.index, m.index + m[0].length);
   }
 
+  // 2b. Bare "737MAX 8" / "737 MAX 9" printed WITHOUT the word "Boeing".
+  //     Google Flights prints this form for carriers such as Akasa Air (QP):
+  //     "Boeing 737MAX 8" -> 7M8. Longer overlapping matches (rule 2/3) win.
+  const bareMax = /(?<![A-Za-z0-9])737\s*-?\s*MAX\s*(\d{1,2})(?:\s+(?:Passenger|Pax))?/gi;
+  while ((m = bareMax.exec(text)) !== null) {
+    push(parseExplicitAircraftString(m[0]), m[0], m.index, m.index + m[0].length);
+  }
+
   // 3. Boeing 777-300ER / 787-9 Dreamliner / 737 MAX 8 / 767-300 / 737-800
   const boeing = /\bBoeing\s*(\d{3})(?:\s*-\s*(\d{1,4})([A-Za-z]{0,3}))?(?:\s+(?:MAX|NG)\s*(\d+))?(?:\s+(?:Passenger|Pax))?/gi;
   boeing.lastIndex = 0;

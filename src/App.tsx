@@ -4,22 +4,19 @@ import { assembleFromSegments, convertFlights, convertToSabre } from "./lib/conv
 import type { Cabin, ConverterResult, Issue, Segment } from "./lib/types";
 import { ocrImage } from "./lib/ocr";
 import {
+  AiError,
   DEFAULT_AI_SETTINGS,
   defaultModelFor,
   extractFlightsWithAI,
-  sanitizeModel,
-  shouldAutoRunAi,
   type AiProvider,
   type AiSettings,
 } from "./lib/ai";
 import {
-  canSaveItinerary,
   clearLearned,
   flightKey,
   forgetAircraft,
   forgetFlight,
   forgetItinerary,
-  forgetItineraryForText,
   isLearningEnabled,
   learnAircraft,
   learnFlight,
@@ -32,13 +29,6 @@ import {
   type FlightCorrection,
   type LearnedItinerary,
 } from "./lib/learning";
-import {
-  clearLearnedClasses,
-  getLearnedClasses,
-  parseClassKey,
-  removeLearnedClass,
-  saveLearnedClass,
-} from "./lib/cabinClasses";
 
 /* ------------------------------------------------------------------ */
 /* constants                                                           */
@@ -118,15 +108,7 @@ const AI_LS_KEY = "el3asool.ai.settings.v1";
 function loadAiSettings(): AiSettings {
   try {
     const raw = localStorage.getItem(AI_LS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      const provider: AiProvider = parsed.provider || "gemini";
-      return {
-        ...DEFAULT_AI_SETTINGS,
-        ...parsed,
-        model: sanitizeModel(provider, parsed.model),
-      };
-    }
+    if (raw) return { ...DEFAULT_AI_SETTINGS, ...JSON.parse(raw) };
   } catch {
     /* ignore */
   }
@@ -238,42 +220,19 @@ function OutputCard({
   emptyText,
   copied,
   onCopy,
-  fill,
-  compact,
-  className,
 }: {
   title: string;
   text: string;
   emptyText?: string;
   copied: boolean;
   onCopy: () => void;
-  /** fills its grid cell with an internal scroll area on large screens */
-  fill?: boolean;
-  /** hugs its 1–2 line content instead of claiming a whole cell (large screens) */
-  compact?: boolean;
-  /** extra layout classes for the caller (e.g. lg:flex-1) */
-  className?: string;
 }) {
   const has = text.length > 0;
   const lineCount = has ? text.split("\n").filter((l) => l.trim()).length : 0;
-  /** on large screens: own the leftover space (fill) or just the content height (compact) — both scroll inside */
-  const scrollPane = fill || compact;
   return (
-    <section
-      className={cn(
-        "glass glass-hover fade-up group relative overflow-hidden rounded-2xl",
-        fill && "lg:flex lg:min-h-0 lg:flex-col",
-        compact && "lg:flex lg:max-h-[22vh] lg:min-h-0 lg:flex-col",
-        className
-      )}
-    >
+    <section className="glass glass-hover fade-up group relative overflow-hidden rounded-2xl">
       <div className="card-accent absolute inset-x-0 top-0 h-px opacity-70 transition-opacity duration-300 group-hover:opacity-100" />
-      <header
-        className={cn(
-          "flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-3.5",
-          compact && "lg:px-4 lg:py-2.5"
-        )}
-      >
+      <header className="flex items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-3.5">
         <div className="flex items-center gap-2.5">
           <span
             className={cn(
@@ -291,24 +250,11 @@ function OutputCard({
         <CopyButton label="Copy" copied={copied} disabled={!has} onCopy={onCopy} />
       </header>
       {has ? (
-        <pre
-          className={cn(
-            "sabre-scroll overflow-x-auto whitespace-pre px-5 py-4 font-mono text-[12.5px] leading-[1.8] text-slate-100 selection:bg-honey/30 lg:min-h-0 lg:flex-1 lg:overflow-auto",
-            compact && "lg:px-4 lg:py-3 lg:leading-[1.7]",
-            scrollPane && "lg:text-[11.5px] min-[1800px]:text-[12.5px]"
-          )}
-        >
+        <pre className="sabre-scroll overflow-x-auto whitespace-pre px-5 py-4 font-mono text-[12.5px] leading-[1.8] text-slate-100 selection:bg-honey/30">
           {text}
         </pre>
       ) : (
-        <p
-          className={cn(
-            "px-5 py-4 text-[12.5px] italic text-slate-500",
-            compact && "lg:px-4 lg:py-3"
-          )}
-        >
-          {emptyText ?? "—"}
-        </p>
+        <p className="px-5 py-4 text-[12.5px] italic text-slate-500">{emptyText ?? "—"}</p>
       )}
     </section>
   );
@@ -363,6 +309,8 @@ export default function App() {
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
   const [aiNote, setAiNote] = useState("");
+  /** transient "busy / retrying…" status while backoff + model fallback run */
+  const [aiRetry, setAiRetry] = useState("");
   const aiAutoRef = useRef<string>("");
 
   const cacheRef = useRef(new Map<string, ConverterResult>());
@@ -408,14 +356,7 @@ export default function App() {
     // re-validate the EDITED output; stale internal checks from the original
     // parse are replaced by fresh ones, parse-time notes are kept.
     const carriedIssues = result.issues.filter((i) => !i.text.startsWith("Internal:"));
-    return assembleFromSegments(
-      edited,
-      carriedIssues,
-      result.missingCabinFlights,
-      result.unknownClassQuestions,
-      result.failedOperatorFlights,
-      result.failedEquipmentFlights
-    );
+    return assembleFromSegments(edited, carriedIssues, result.missingCabinFlights);
   }, [result, edited]);
 
   const editedCount = useMemo(() => {
@@ -456,12 +397,6 @@ export default function App() {
       itineraries: listLearnedItineraries(),
       flights: listLearnedFlights(),
       aircraft: listLearnedAircraft(),
-      classes: Array.from(getLearnedClasses().entries()).map(([k, c]) => ({
-        key: k,
-        airline: parseClassKey(k).airline,
-        letter: parseClassKey(k).letter,
-        cabin: c,
-      })),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [learnedVersion, result]
@@ -485,45 +420,12 @@ export default function App() {
   }, []);
   const handleClearLearned = useCallback(() => {
     clearLearned();
-    clearLearnedClasses();
     setLearnedVersion((v) => v + 1);
   }, []);
   const toggleLearning = useCallback((on: boolean) => {
     setLearningOn(on);
     setLearningEnabled(on);
   }, []);
-
-  const handleConfirmClassCabin = useCallback(
-    (airline: string, classLetter: string, cabin: Cabin) => {
-      saveLearnedClass(airline, classLetter, cabin);
-      setLearnedVersion((v) => v + 1);
-      cacheRef.current.clear();
-      setResult(convert(text, fallbackCabin));
-    },
-    [text, fallbackCabin, convert]
-  );
-
-  const handleForgetLearnedClass = useCallback(
-    (airline: string, letter: string) => {
-      removeLearnedClass(airline, letter);
-      setLearnedVersion((v) => v + 1);
-      cacheRef.current.clear();
-      setResult(convert(text, fallbackCabin));
-    },
-    [text, fallbackCabin, convert]
-  );
-
-  const handleClearSavedItinerary = useCallback(() => {
-    if (text) {
-      forgetItineraryForText(text);
-    }
-    cacheRef.current.clear();
-    setResult(convert(text, fallbackCabin));
-    setLearnedVersion((v) => v + 1);
-    setAiNote("Saved itinerary cleared.");
-    const t = window.setTimeout(() => setAiNote(""), 3000);
-    return () => window.clearTimeout(t);
-  }, [text, fallbackCabin, convert]);
 
   /* ---- AI assist ---- */
   const updateAi = useCallback((patch: Partial<AiSettings>) => {
@@ -534,9 +436,6 @@ export default function App() {
     });
   }, []);
 
-  const [aiRetrying, setAiRetrying] = useState(false);
-  const [aiStatusMsg, setAiStatusMsg] = useState("");
-
   const runAi = useCallback(
     async (rawText: string) => {
       if (!ai.apiKey) {
@@ -546,21 +445,22 @@ export default function App() {
       }
       if (!rawText.trim()) return;
       setAiBusy(true);
-      setAiRetrying(false);
-      setAiStatusMsg("");
       setAiError("");
       setAiNote("");
+      setAiRetry("");
       try {
-        const flights = await extractFlightsWithAI(rawText, ai, (status) => {
-          setAiRetrying(true);
-          setAiStatusMsg(status);
+        // Transient provider failures (503 UNAVAILABLE, 429, network drops) are
+        // retried with exponential backoff and then across the fallback models.
+        // The user sees a calm "busy / retrying" note instead of a raw error.
+        const flights = await extractFlightsWithAI(rawText, ai, {
+          onAttempt: (info) => setAiRetry(info.message),
         });
+        setAiRetry("");
         const out = convertFlights(flights, fallbackCabin);
         setResult(out);
 
-        // Auto-learn when learning is enabled, but NEVER save incomplete/bad results
-        // (no "---", no missing operator on star segments)
-        if (learningOn && canSaveItinerary(flights)) {
+        // Auto-learn when learning is enabled so the user never needs AI again for this flight!
+        if (learningOn) {
           learnItinerary(rawText, flights);
           out.segments.forEach((seg) => learnFlight(seg));
           setLearnedVersion((v) => v + 1);
@@ -571,26 +471,34 @@ export default function App() {
           setAiNote(`AI read ${flights.length} flight${flights.length > 1 ? "s" : ""}. Review the output below.`);
         }
       } catch (e) {
-        setAiError(e instanceof Error ? e.message : "AI extraction failed.");
+        setAiRetry("");
+        // A temporarily overloaded model must never look like a converter or
+        // itinerary failure, and never corrupts the local parser's result.
+        if (e instanceof AiError && e.transient) {
+          setAiError(
+            e.status === 503 || e.status === undefined
+              ? "🧭 AI Assist is temporarily unavailable (the model is overloaded). This is not a problem with your itinerary or the converter — the local result below is unaffected. Try again in a moment."
+              : `🧭 AI Assist is temporarily unavailable (${e.status}). The local result below is unaffected — try again shortly.`
+          );
+        } else {
+          setAiError(e instanceof Error ? e.message : "AI extraction failed.");
+        }
       } finally {
         setAiBusy(false);
-        setAiRetrying(false);
-        setAiStatusMsg("");
       }
     },
     [ai, fallbackCabin, learningOn]
   );
 
-  /* Auto-run AI when it is enabled and the local parser counts as failed:
-   *  - a segment has no equipment ("---");
-   *  - a segment with a "*" flag has no operator;
-   *  - an airline + class letter pair is not in confirmed or learned table; or
-   *  - the parser held back any segment.
-   * Does not wait for "Read with AI" click. */
+  /* Auto-run AI when it is enabled and the local parser could not build a
+   * complete result (missing fields / skipped flights). Manual button always
+   * available. Never fires twice for the same unchanged input. */
   useEffect(() => {
     if (!ai.enabled || !ai.apiKey || !text.trim()) return;
     if (!result) return;
-    if (!shouldAutoRunAi(result)) return;
+    const hasError = result.issues.some((i) => i.level === "error");
+    const nothingBuilt = !result.hasOutput;
+    if (!hasError && !nothingBuilt) return;
     const key = `${text}`;
     if (aiAutoRef.current === key) return;
     const t = window.setTimeout(() => {
@@ -629,28 +537,7 @@ export default function App() {
 
   /* ---------- global clipboard detection ---------- */
   useEffect(() => {
-    const isOtherInputOrEditable = (target: HTMLElement | null, active: Element | null): boolean => {
-      const el = target || (active as HTMLElement | null);
-      if (!el) return false;
-      if (el === inputRef.current) return false; // main flight itinerary box is allowed!
-      if (el.tagName === "INPUT" || el.tagName === "SELECT") return true;
-      if (el.tagName === "TEXTAREA" && el !== inputRef.current) return true;
-      if (el.isContentEditable) return true;
-      if (el.closest("input, select, [contenteditable='true']")) return true;
-      if (el.closest("textarea") && el.closest("textarea") !== inputRef.current) return true;
-      return false;
-    };
-
     const onPaste = (e: ClipboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      const activeEl = document.activeElement;
-
-      // When focus is inside an input, textarea or contenteditable element other than the
-      // itinerary box (e.g. the API key box), do nothing and let the browser paste normally!
-      if (isOtherInputOrEditable(target, activeEl)) {
-        return;
-      }
-
       const cd = e.clipboardData;
       if (!cd) return;
       let imageFile: File | null = null;
@@ -666,8 +553,8 @@ export default function App() {
       } catch {
         /* ignore clipboard read errors */
       }
-
-      const inItineraryBox = target === inputRef.current || activeEl === inputRef.current;
+      const target = e.target as HTMLElement | null;
+      const inTextarea = !!target && (target.tagName === "TEXTAREA" || !!target.closest("textarea"));
       const meaningfulText = textData.trim().length >= 40 && !looksLikeUrlOnly(textData);
 
       if (imageFile && !meaningfulText) {
@@ -676,33 +563,17 @@ export default function App() {
         void handleImageFile(imageFile);
         return;
       }
-      if (meaningfulText && !inItineraryBox) {
-        // text pasted anywhere on the page (not in any other field) → straight into the local parser
+      if (meaningfulText && !inTextarea) {
+        // text pasted anywhere in the app → straight into the local parser
         e.preventDefault();
         setText(textData);
         return;
       }
-      // text pasted into the itinerary textarea uses the native flow; the debounce
-      // handler converts it.
+      // text pasted into the textarea uses the native flow; the debounce
+      // handler above converts it locally.
     };
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
-        const target = e.target as HTMLElement | null;
-        const activeEl = document.activeElement;
-        if (isOtherInputOrEditable(target, activeEl)) {
-          // Never preventDefault when focus is in the API key field or other input!
-          return;
-        }
-      }
-    };
-
     window.addEventListener("paste", onPaste);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("paste", onPaste);
-      window.removeEventListener("keydown", onKeyDown);
-    };
+    return () => window.removeEventListener("paste", onPaste);
   }, [handleImageFile]);
 
   /* ---------- drag & drop / upload ---------- */
@@ -784,12 +655,7 @@ export default function App() {
 
   const showIssues = useMemo(() => {
     if (!liveResult) return [];
-    return liveResult.issues.filter(
-      (i) =>
-        i.level !== "info" &&
-        !i.text.toLowerCase().includes("equipment not found") &&
-        !i.text.toLowerCase().includes("operator not found")
-    );
+    return liveResult.issues.filter((i) => i.level !== "info");
   }, [liveResult]);
 
   const infoIssue = useMemo(() => {
@@ -803,7 +669,7 @@ export default function App() {
   const processing = ocrStatus === "processing";
 
   return (
-    <div className="relative flex min-h-screen flex-col overflow-x-hidden lg:h-[100dvh] lg:min-h-0 lg:overflow-hidden">
+    <div className="relative min-h-screen overflow-x-hidden">
       {/* backdrop */}
       <div className="pointer-events-none fixed inset-0">
         <div className="app-grid absolute inset-0" />
@@ -814,48 +680,9 @@ export default function App() {
         <div className="absolute inset-x-0 bottom-0 h-80 bg-gradient-to-t from-[#05070d] to-transparent" />
       </div>
 
-      {/* ============ compact top rail — one row on large screens ============ */}
-      <header className="relative hidden shrink-0 items-center gap-4 border-b border-white/[0.07] bg-[#05070d]/60 px-4 py-2 backdrop-blur-md lg:flex lg:px-6">
-        <div className="flex min-w-0 shrink-0 items-center gap-2.5">
-          <span className="glass flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-lg">🍯</span>
-          <div className="min-w-0">
-            <p className="truncate text-[15px] font-extrabold leading-tight">
-              <span className="text-gold">El 3asool Converter</span>
-            </p>
-            <p className="mt-0.5 truncate text-[9.5px] font-semibold tracking-[0.24em] text-slate-500">
-              SABRE / GDS ITINERARY CONVERTER
-            </p>
-          </div>
-        </div>
-
-        <div className="flex min-w-0 flex-1 items-center justify-center gap-3">
-          <span className="gold-rule hidden h-px flex-1 lg:block" />
-          <span className="text-[10px] text-honey/60">✦</span>
-          <div
-            dir="rtl"
-            lang="ar"
-            className="font-arabic whitespace-nowrap px-1 text-[1.05rem] leading-7 text-amber-50 [text-shadow:0_2px_18px_rgba(245,197,24,0.25)] lg:text-[1.2rem]"
-          >
-            اللَّهُمَّ صَلِّ وَسَلِّمْ عَلَى نَبِيِّنَا مُحَمَّدٍ
-          </div>
-          <span className="text-[10px] text-honey/60">✦</span>
-          <span className="gold-rule hidden h-px flex-1 lg:block" />
-        </div>
-
-        <div className="flex shrink-0 items-center gap-3">
-          <span className="inline-flex items-center gap-2 rounded-full border border-honey/25 bg-honey/[0.07] px-3 py-1 text-[9.5px] font-bold tracking-[0.3em] text-honey">
-            <span className="glow-pulse h-1.5 w-1.5 rounded-full bg-honey" />
-            SABRE / GDS
-          </span>
-          <p className="hidden text-right text-[9.5px] leading-tight tracking-wide text-slate-600 2xl:block">
-            Made by <span className="text-slate-500">Ziad El Asaal</span>
-          </p>
-        </div>
-      </header>
-
-      <main className="relative mx-auto flex w-full max-w-5xl flex-col px-4 pb-20 pt-9 sm:px-6 lg:min-h-0 lg:max-w-none lg:flex-1 lg:px-5 lg:pb-4 lg:pt-4 2xl:px-6">
-        {/* ============ header (small screens) ============ */}
-        <header className="text-center lg:hidden">
+      <main className="relative mx-auto w-full max-w-5xl px-4 pb-20 pt-9 sm:px-6">
+        {/* ============ header ============ */}
+        <header className="text-center">
           {/* Arabic remembrance — framed, centered, RTL */}
           <div className="fade-up relative mx-auto max-w-3xl">
             <div className="pointer-events-none absolute inset-0 -z-10 rounded-[28px] bg-[radial-gradient(60%_100%_at_50%_50%,rgba(245,197,24,0.10),transparent_72%)]" />
@@ -904,11 +731,9 @@ export default function App() {
           </p>
         </header>
 
-        {/* ============ workspace — paste left, answers right ============ */}
-        <div className="mt-9 flex flex-col gap-4 lg:mt-0 lg:grid lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,0.82fr)_minmax(0,1.18fr)] lg:grid-rows-[minmax(0,1fr)] lg:items-stretch">
-          {/* ============ input card (left pane) ============ */}
-          <section className="glass fade-up flex flex-col rounded-2xl lg:min-h-0 lg:overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-4 sm:px-5 sm:pt-5 lg:shrink-0">
+        {/* ============ input card ============ */}
+        <section className="glass fade-up mt-9 rounded-2xl p-4 sm:p-5">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h2 className="flex items-center gap-2 text-[11px] font-bold tracking-[0.25em] text-slate-300">
               <span className="text-honey/70">❯</span>
               PASTE ITINERARY — TEXT OR SCREENSHOT
@@ -927,20 +752,6 @@ export default function App() {
               >
                 🧭 AI Assist{ai.enabled && ai.apiKey ? " · on" : ""}
               </button>
-              {!ai.apiKey && (
-                <a
-                  href={
-                    ai.provider === "gemini"
-                      ? "https://aistudio.google.com/apikey"
-                      : "https://platform.openai.com/api-keys"
-                  }
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="rounded-lg border border-honey/40 bg-honey/15 px-3 py-1.5 text-xs font-bold text-amber-200 transition hover:bg-honey/25"
-                >
-                  Get API key ↗
-                </a>
-              )}
               <button
                 type="button"
                 onClick={readClipboardImage}
@@ -960,15 +771,13 @@ export default function App() {
                 Clear
               </button>
             </div>
-            </div>
+          </div>
 
-            {/* scrollable paste area — toolbar stays pinned, the box fills the pane */}
-            <div className="sabre-scroll px-4 pb-4 pt-3.5 sm:px-5 sm:pb-5 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-y-auto">
-            <div
-              onDragOver={(e) => e.preventDefault()}
+          <div
+            onDragOver={(e) => e.preventDefault()}
             onDrop={onDrop}
             className={cn(
-              "relative rounded-xl border transition-all duration-300 lg:flex lg:min-h-[190px] lg:flex-1 lg:flex-col",
+              "relative rounded-xl border transition-all duration-300",
               processing
                 ? "border-honey/45 bg-honey/[0.04]"
                 : "border-white/10 bg-slate-950/70 focus-within:border-honey/55 focus-within:shadow-[0_0_0_4px_rgba(245,197,24,0.07)]"
@@ -980,7 +789,7 @@ export default function App() {
               onChange={(e) => setText(e.target.value)}
               spellCheck={false}
               placeholder={"Paste a flight itinerary here…\n\nText works: ⌘V / Ctrl+V\nScreenshots work too: ⌘V / Ctrl+V directly in this box\n\nOr drag & drop an image."}
-              className="sabre-scroll block min-h-[190px] w-full resize-y rounded-xl bg-transparent p-4 font-mono text-[13px] leading-relaxed text-slate-100 placeholder:text-slate-600 focus:outline-none lg:min-h-0 lg:flex-1 lg:resize-none"
+              className="sabre-scroll block min-h-[190px] w-full resize-y rounded-xl bg-transparent p-4 font-mono text-[13px] leading-relaxed text-slate-100 placeholder:text-slate-600 focus:outline-none"
             />
 
             {/* OCR overlay */}
@@ -1033,6 +842,49 @@ export default function App() {
             </div>
           )}
 
+          {/* fallback cabin prompt (only when genuinely needed) */}
+          {result && result.missingCabinFlights.length > 0 && !fallbackCabin && (
+            <div className="fade-up mt-4 rounded-xl border border-amber-300/25 bg-amber-300/[0.05] p-4">
+              <p className="text-sm font-semibold text-amber-200">
+                Cabin not stated in the itinerary{" "}
+                <span className="font-normal text-amber-200/70">
+                  ({result.missingCabinFlights.length} flight{result.missingCabinFlights.length > 1 ? "s" : ""}:{" "}
+                  {result.missingCabinFlights.join(" · ")})
+                </span>
+              </p>
+              <p className="mt-1 text-xs text-amber-200/60">
+                Choose the cabin to assign its default booking class:
+              </p>
+              <div className="mt-2.5 flex flex-wrap gap-2">
+                {CABIN_OPTIONS.map((c) => (
+                  <button
+                    key={c.value}
+                    type="button"
+                    onClick={() => setFallbackCabin(c.value)}
+                    className="rounded-lg border border-honey/40 bg-honey/10 px-3.5 py-1.5 text-xs font-bold text-honey transition hover:bg-honey/20"
+                  >
+                    {c.label} <span className="font-normal opacity-70">· {c.hint}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {fallbackCabin && result && result.missingCabinFlights.length === 0 && (
+            <div className="mt-3 flex items-center justify-between rounded-lg border border-emerald-300/20 bg-emerald-300/[0.05] px-3.5 py-2">
+              <p className="text-xs text-emerald-200/90">
+                Cabin <span className="font-bold">{CABIN_OPTIONS.find((c) => c.value === fallbackCabin)?.label}</span>{" "}
+                applied to flights without a stated cabin.
+              </p>
+              <button
+                type="button"
+                onClick={() => setFallbackCabin(null)}
+                className="text-[11px] font-semibold text-slate-400 underline-offset-2 hover:text-white hover:underline"
+              >
+                Undo
+              </button>
+            </div>
+          )}
+
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
             <p>
               Paste with <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 font-mono">⌘V</kbd> /{" "}
@@ -1049,33 +901,9 @@ export default function App() {
           </div>
           {pasteHint && <p className="mt-2 text-[11.5px] text-rose-300/90">{pasteHint}</p>}
 
-          {aiRetrying && (
-            <p className="mt-2 text-[11.5px] text-amber-300 font-medium animate-pulse">
-              {aiStatusMsg || "Retrying lookup..."}
-            </p>
-          )}
-
           {aiNote && <p className="mt-2 text-[11.5px] text-emerald-300/90">{aiNote}</p>}
-
-          {aiError && (
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-400/30 bg-rose-400/[0.08] p-3 text-xs text-rose-300">
-              <div className="min-w-0 flex-1 space-y-1">
-                <p>{aiError}</p>
-                {(aiError.includes("429") || aiError.toLowerCase().includes("rate limit") || aiError.toLowerCase().includes("quota")) && (
-                  <p className="text-[11.5px] text-amber-200/90">
-                    Tip: On free Google AI Studio keys, <strong>Gemini 3.5 Flash Lite</strong> offers 500 requests per day (vs 20/day on regular Flash). You can select it in the AI Assist panel above.
-                  </p>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={() => void runAi(text)}
-                className="shrink-0 rounded-lg border border-rose-400/40 bg-rose-500/20 px-3 py-1 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/30"
-              >
-                Retry lookup
-              </button>
-            </div>
-          )}
+          {aiRetry && <p className="mt-2 text-[11.5px] text-amber-300/90">{aiRetry}</p>}
+          {aiError && <p className="mt-2 text-[11.5px] text-rose-300/90">{aiError}</p>}
 
           {/* ---- AI Assist panel ---- */}
           {aiOpen && (
@@ -1119,119 +947,37 @@ export default function App() {
                 </div>
                 <div>
                   <label className={labelCls}>Model</label>
-                  {ai.provider === "gemini" ? (
-                    <select
-                      className={inputCls}
-                      value={ai.model}
-                      onChange={(e) => updateAi({ model: e.target.value })}
-                    >
-                      <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommended - fast & active)</option>
-                      <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite (High quota - 500 RPD)</option>
-                      <option value="gemini-3.7-flash">Gemini 3.7 Flash</option>
-                      <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
-                      <option value="gemini-3-flash">Gemini 3 Flash</option>
-                      <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (500 RPD)</option>
-                      <option value="gemini-3.6-flash">Gemini 3.6 Flash</option>
-                    </select>
-                  ) : ai.provider === "openai" ? (
-                    <select
-                      className={inputCls}
-                      value={ai.model}
-                      onChange={(e) => updateAi({ model: e.target.value })}
-                    >
-                      <option value="gpt-4o-mini">gpt-4o-mini (Recommended)</option>
-                      <option value="gpt-4o">gpt-4o</option>
-                    </select>
-                  ) : (
-                    <input
-                      className={inputCls}
-                      value={ai.model}
-                      placeholder={defaultModelFor(ai.provider)}
-                      onChange={(e) => updateAi({ model: e.target.value })}
-                    />
-                  )}
+                  <input
+                    className={inputCls}
+                    value={ai.model}
+                    placeholder={defaultModelFor(ai.provider)}
+                    onChange={(e) => updateAi({ model: e.target.value })}
+                  />
                 </div>
                 <div className="sm:col-span-2">
-                  <div className="flex items-center justify-between pb-1">
-                    <label className={labelCls}>API key</label>
-                    {(ai.provider === "gemini" || ai.provider === "openai") && (
-                      <a
-                        href={
-                          ai.provider === "gemini"
-                            ? "https://aistudio.google.com/apikey"
-                            : "https://platform.openai.com/api-keys"
-                        }
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-[11.5px] font-semibold text-honey hover:underline inline-flex items-center gap-1"
-                      >
-                        Get {ai.provider === "gemini" ? "Google Gemini" : "OpenAI"} key ↗
-                      </a>
-                    )}
-                  </div>
+                  <label className={labelCls}>API key</label>
                   <input
                     type="password"
                     className={inputCls}
                     value={ai.apiKey}
                     placeholder="paste your API key"
                     autoComplete="off"
-                    onPaste={(e) => {
-                      e.stopPropagation();
-                      const clip = e.clipboardData.getData("text/plain");
-                      if (clip) {
-                        e.preventDefault();
-                        const cleanKey = clip.replace(/[\r\n\s]+/g, "").trim();
-                        updateAi({ apiKey: cleanKey });
-                      }
-                    }}
-                    onChange={(e) => {
-                      const cleanKey = e.target.value.replace(/[\r\n\s]+/g, "").trim();
-                      updateAi({ apiKey: cleanKey });
-                    }}
+                    onChange={(e) => updateAi({ apiKey: e.target.value })}
                   />
                 </div>
-
-                {/* "Get your API key" button for first-time users */}
-                {!ai.apiKey && (ai.provider === "gemini" || ai.provider === "openai") && (
-                  <div className="sm:col-span-2 rounded-xl border border-honey/30 bg-honey/[0.06] p-4 text-xs">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <p className="font-semibold text-honey">Need an API key?</p>
-                        <p className="text-[11.5px] text-slate-300/80">Get a free key to enable AI Assist</p>
-                      </div>
-                      <a
-                        href={
-                          ai.provider === "gemini"
-                            ? "https://aistudio.google.com/apikey"
-                            : "https://platform.openai.com/api-keys"
-                        }
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-honey px-3 py-1.5 text-xs font-bold text-slate-950 transition hover:bg-honey/90 shadow-sm"
-                      >
-                        Get your API key ↗
-                      </a>
-                    </div>
-                    <ol className="mt-3 list-decimal space-y-1 pl-4 text-slate-300 text-[11.5px] leading-relaxed">
-                      {ai.provider === "gemini" ? (
-                        <>
-                          <li>Sign in with your Google account.</li>
-                          <li>Click Create API key.</li>
-                          <li>Copy it and paste it in the API key box here.</li>
-                        </>
-                      ) : (
-                        <>
-                          <li>Sign in with your OpenAI account.</li>
-                          <li>Click Create new secret key.</li>
-                          <li>Copy it and paste it in the API key box here.</li>
-                        </>
-                      )}
-                    </ol>
-                    <p className="mt-2 text-[11px] text-slate-400">
-                      Your key is stored only in this browser.
-                    </p>
-                  </div>
-                )}
+                <div className="sm:col-span-2">
+                  <label className={labelCls}>Fallback models (optional)</label>
+                  <input
+                    className={inputCls}
+                    value={ai.fallbackModels ?? ""}
+                    placeholder="comma separated — tried automatically if the main model is overloaded"
+                    onChange={(e) => updateAi({ fallbackModels: e.target.value })}
+                  />
+                  <p className="mt-1 text-[10.5px] text-amber-200/50">
+                    On a busy model (HTTP 503) the request is retried with backoff, then these models are tried
+                    in order before AI Assist reports itself temporarily unavailable.
+                  </p>
+                </div>
                 {ai.provider === "custom" && (
                   <div className="sm:col-span-2">
                     <label className={labelCls}>Base URL</label>
@@ -1270,273 +1016,124 @@ export default function App() {
               </div>
             </div>
           )}
+        </section>
 
-            {/* ============ issues — left pane, under the paste box ============ */}
-            {(showIssues.length > 0 || infoIssue) && (
-              <div className="mt-3 space-y-2 lg:shrink-0">
-                {showIssues.map((issue, idx) => (
-                  <IssueRow key={idx} issue={issue} />
-                ))}
-                {infoIssue && <IssueRow issue={infoIssue} />}
-              </div>
-            )}
+        {/* ============ issues ============ */}
+        {(showIssues.length > 0 || infoIssue) && (
+          <div className="mt-5 space-y-2">
+            {showIssues.map((issue, idx) => (
+              <IssueRow key={idx} issue={issue} />
+            ))}
+            {infoIssue && <IssueRow issue={infoIssue} />}
+          </div>
+        )}
 
-            {/* ============ questions, warnings & actions ============ */}
-            {liveResult && liveResult.hasOutput && (
-              <div className="mt-3 space-y-4 lg:shrink-0">
-                {/* Unknown class letter questions */}
-                {liveResult.unknownClassQuestions && liveResult.unknownClassQuestions.length > 0 && (
-                  <div className="space-y-3">
-                    {liveResult.unknownClassQuestions.map((q) => (
-                      <div
-                        key={`${q.airline}-${q.classLetter}`}
-                        className="rounded-xl border border-amber-300/30 bg-amber-400/[0.07] p-4 text-xs"
-                      >
-                        <p className="text-sm font-semibold text-amber-200">
-                          What cabin is {q.airline} class {q.classLetter}?
-                        </p>
-                        <p className="mt-1 text-[11.5px] text-amber-200/70">
-                          Choose the cabin for {q.airline} class {q.classLetter}. Your answer is saved as “{q.airline}: {q.classLetter} = &lt;CABIN&gt;”.
-                        </p>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {(["ECONOMY", "BUSINESS", "PREMIUM", "FIRST"] as Cabin[]).map((cab) => (
-                            <button
-                              key={cab}
-                              type="button"
-                              onClick={() => handleConfirmClassCabin(q.airline, q.classLetter, cab)}
-                              className="rounded-lg border border-amber-400/40 bg-amber-400/15 px-3.5 py-1.5 text-xs font-bold text-amber-100 transition hover:bg-amber-400/30"
-                            >
-                              {cab.charAt(0) + cab.slice(1).toLowerCase()}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Missing cabin flights (neither class letter nor cabin stated) */}
-                {liveResult.missingCabinFlights && liveResult.missingCabinFlights.length > 0 && !fallbackCabin && (
-                  <div className="rounded-xl border border-amber-300/25 bg-amber-300/[0.05] p-4 text-xs">
-                    <p className="text-sm font-semibold text-amber-200">
-                      Cabin not stated in the itinerary{" "}
-                      <span className="font-normal text-amber-200/70">
-                        ({liveResult.missingCabinFlights.length} flight{liveResult.missingCabinFlights.length > 1 ? "s" : ""}:{" "}
-                        {liveResult.missingCabinFlights.join(" · ")})
-                      </span>
-                    </p>
-                    <p className="mt-1 text-xs text-amber-200/60">
-                      Choose the cabin to assign its default booking class:
-                    </p>
-                    <div className="mt-2.5 flex flex-wrap gap-2">
-                      {CABIN_OPTIONS.map((c) => (
-                        <button
-                          key={c.value}
-                          type="button"
-                          onClick={() => setFallbackCabin(c.value)}
-                          className="rounded-lg border border-honey/40 bg-honey/10 px-3.5 py-1.5 text-xs font-bold text-honey transition hover:bg-honey/20"
-                        >
-                          {c.label} <span className="font-normal opacity-70">· {c.hint}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Warnings with Retry buttons */}
-                {((liveResult.failedOperatorFlights && liveResult.failedOperatorFlights.length > 0) ||
-                  (liveResult.failedEquipmentFlights && liveResult.failedEquipmentFlights.length > 0)) && (
-                  <div className="space-y-2">
-                    {liveResult.failedOperatorFlights?.map((flt) => (
-                      <div
-                        key={`fail-op-${flt}`}
-                        className="flex items-center justify-between gap-3 rounded-xl border border-amber-400/30 bg-amber-400/[0.08] p-3 text-xs text-amber-200"
-                      >
-                        <p>operator not found for {flt} (lookup failed). Tap Retry.</p>
-                        <button
-                          type="button"
-                          onClick={() => void runAi(text)}
-                          className="shrink-0 rounded-lg bg-amber-400/20 border border-amber-400/40 px-3 py-1 font-semibold text-amber-100 hover:bg-amber-400/30 transition"
-                        >
-                          Retry
-                        </button>
-                      </div>
-                    ))}
-                    {liveResult.failedEquipmentFlights?.map((flt) => (
-                      <div
-                        key={`fail-eq-${flt}`}
-                        className="flex items-center justify-between gap-3 rounded-xl border border-amber-400/30 bg-amber-400/[0.08] p-3 text-xs text-amber-200"
-                      >
-                        <p>equipment not found for {flt}. Tap Retry.</p>
-                        <button
-                          type="button"
-                          onClick={() => void runAi(text)}
-                          className="shrink-0 rounded-lg bg-amber-400/20 border border-amber-400/40 px-3 py-1 font-semibold text-amber-100 hover:bg-amber-400/30 transition"
-                        >
-                          Retry
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Clear saved itinerary button */}
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/5">
-                  <button
-                    type="button"
-                    onClick={handleClearSavedItinerary}
-                    className="rounded-lg border border-white/10 bg-slate-900/60 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-rose-400/40 hover:text-rose-200 transition"
-                  >
-                    Clear saved itinerary
-                  </button>
-                  <div className="text-[11px] text-slate-500">
-                    {liveResult.segments.length} segment{liveResult.segments.length > 1 ? "s" : ""} converted
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* ---- review & edit flights & self-learning ---- */}
-            {liveResult && liveResult.hasOutput && (
-              <div className="mt-3 space-y-3 lg:shrink-0">
-                {/* ---- review & edit flights ---- */}
-                <FlightEditor
-                  open={editorOpen}
-                  onToggle={() => setEditorOpen((v) => !v)}
-                  segments={edited ?? liveResult.segments}
-                  resultSegments={result?.segments ?? []}
-                  editedCount={editedCount}
-                  onUpdate={updateSegment}
-                  onReset={resetEdits}
-                  learningOn={learningOn}
-                />
-
-                {/* ---- self-learning manager ---- */}
-                <LearningPanel
-                  open={learnedOpen}
-                  onToggle={() => setLearnedOpen((v) => !v)}
-                  learningOn={learningOn}
-                  onToggleLearning={toggleLearning}
-                  itineraries={learnedRules.itineraries}
-                  flights={learnedRules.flights}
-                  aircraft={learnedRules.aircraft}
-                  classes={learnedRules.classes}
-                  onForgetItinerary={handleForgetItinerary}
-                  onForgetFlight={handleForgetFlight}
-                  onForgetAircraft={handleForgetAircraft}
-                  onForgetClass={handleForgetLearnedClass}
-                  onClearAll={handleClearLearned}
-                />
-              </div>
-            )}
+        {/* ============ output ============ */}
+        {liveResult && liveResult.hasOutput ? (
+          <div className="mt-6 space-y-5">
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-honey/25 bg-honey/[0.07] px-3 py-1 text-[10.5px] font-bold tracking-[0.12em] text-honey">
+                <span className="h-1.5 w-1.5 rounded-full bg-honey" />
+                {liveResult.segments.length} SEGMENT{liveResult.segments.length > 1 ? "S" : ""}
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-slate-300">
+                <span className="h-1.5 w-1.5 rounded-full bg-sky-400/80" />
+                {outCount} OUTBOUND
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-slate-300">
+                <span className="h-1.5 w-1.5 rounded-full bg-violet-400/80" />
+                {inCount} INBOUND
+              </span>
             </div>
-          </section>
 
-          {/* ============ answers (right pane) ============ */}
-          <section className="flex flex-col gap-4 lg:min-h-0 lg:gap-3">
-            {liveResult && liveResult.hasOutput ? (
+            {/* ---- review & edit flights ---- */}
+            <FlightEditor
+              open={editorOpen}
+              onToggle={() => setEditorOpen((v) => !v)}
+              segments={edited ?? liveResult.segments}
+              resultSegments={result?.segments ?? []}
+              editedCount={editedCount}
+              onUpdate={updateSegment}
+              onReset={resetEdits}
+              learningOn={learningOn}
+            />
+
+            <OutputCard
+              title="SABRE ITINERARY"
+              text={liveResult.itinerary}
+              emptyText="Paste an itinerary to build the main entry."
+              copied={copied === "itin"}
+              onCopy={() => void handleCopy("itin", liveResult.itinerary)}
+            />
+            <OutputCard
+              title="OUTBOUND"
+              text={liveResult.outbound}
+              emptyText="No outbound flights."
+              copied={copied === "out"}
+              onCopy={() => void handleCopy("out", liveResult.outbound)}
+            />
+            <OutputCard
+              title="INBOUND"
+              text={liveResult.inbound}
+              emptyText="No inbound flights."
+              copied={copied === "in"}
+              onCopy={() => void handleCopy("in", liveResult.inbound)}
+            />
+            <OutputCard
+              title="INDIVIDUAL"
+              text={liveResult.individual}
+              emptyText="—"
+              copied={copied === "ind"}
+              onCopy={() => void handleCopy("ind", liveResult.individual)}
+            />
+
+            {/* ---- self-learning manager ---- */}
+            <LearningPanel
+              open={learnedOpen}
+              onToggle={() => setLearnedOpen((v) => !v)}
+              learningOn={learningOn}
+              onToggleLearning={toggleLearning}
+              itineraries={learnedRules.itineraries}
+              flights={learnedRules.flights}
+              aircraft={learnedRules.aircraft}
+              onForgetItinerary={handleForgetItinerary}
+              onForgetFlight={handleForgetFlight}
+              onForgetAircraft={handleForgetAircraft}
+              onClearAll={handleClearLearned}
+            />
+          </div>
+        ) : (
+          <div className="fade-up mt-6 rounded-2xl border border-dashed border-white/[0.09] bg-white/[0.015] px-6 py-16 text-center">
+            {text.trim() ? (
+              <p className="text-sm text-slate-500">
+                Nothing convertible yet — check the notes above, or adjust the itinerary text.
+              </p>
+            ) : (
               <>
-                <div className="flex flex-wrap items-center justify-center gap-2 lg:shrink-0 lg:justify-between">
-                  <h2 className="flex items-center gap-2 text-[11px] font-bold tracking-[0.25em] text-slate-300">
-                    <span className="text-honey/70">❯</span>
-                    SABRE OUTPUT
-                  </h2>
-                  <div className="flex flex-wrap items-center justify-center gap-2">
-                  <div className="flex flex-wrap items-center justify-center gap-2">
-                    <span className="inline-flex items-center gap-1.5 rounded-full border border-honey/25 bg-honey/[0.07] px-3 py-1 text-[10.5px] font-bold tracking-[0.12em] text-honey">
-                      <span className="h-1.5 w-1.5 rounded-full bg-honey" />
-                      {liveResult.segments.length} SEGMENT{liveResult.segments.length > 1 ? "S" : ""}
-                    </span>
-                    <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-slate-300">
-                      <span className="h-1.5 w-1.5 rounded-full bg-sky-400/80" />
-                      {outCount} OUTBOUND
-                    </span>
-                    <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-slate-300">
-                      <span className="h-1.5 w-1.5 rounded-full bg-violet-400/80" />
-                      {inCount} INBOUND
-                    </span>
-                  </div>
-                  </div>
+                <div className="relative mx-auto mb-4 flex h-16 w-16 items-center justify-center">
+                  <span className="absolute inset-0 rounded-2xl bg-honey/10 blur-xl" />
+                  <span className="glass relative flex h-16 w-16 items-center justify-center rounded-2xl text-3xl">
+                    🍯
+                  </span>
                 </div>
-
-                {/* SABRE ITINERARY stays alone, full width, above the other three.
-                    Below it: OUTBOUND + INBOUND stacked on the left (they are
-                    normally 1–2 lines each, so they hug their content) and
-                    INDIVIDUAL on the right of the same row. */}
-                <div className="flex flex-col gap-4 lg:min-h-0 lg:flex-1 lg:gap-3">
-                  <OutputCard
-                    fill
-                    className="lg:flex-1"
-                    title="SABRE ITINERARY"
-                    text={liveResult.itinerary}
-                    emptyText="Paste an itinerary to build the main entry."
-                    copied={copied === "itin"}
-                    onCopy={() => void handleCopy("itin", liveResult.itinerary)}
-                  />
-                  <div className="grid grid-cols-1 gap-4 lg:min-h-0 lg:max-h-[48vh] lg:shrink-0 lg:grid-cols-2 lg:gap-3">
-                    <div className="flex flex-col gap-4 lg:min-h-0 lg:gap-3">
-                      <OutputCard
-                        compact
-                        title="OUTBOUND"
-                        text={liveResult.outbound}
-                        emptyText="No outbound flights."
-                        copied={copied === "out"}
-                        onCopy={() => void handleCopy("out", liveResult.outbound)}
-                      />
-                      <OutputCard
-                        compact
-                        title="INBOUND"
-                        text={liveResult.inbound}
-                        emptyText="No inbound flights."
-                        copied={copied === "in"}
-                        onCopy={() => void handleCopy("in", liveResult.inbound)}
-                      />
-                    </div>
-                    <OutputCard
-                      fill
-                      title="INDIVIDUAL"
-                      text={liveResult.individual}
-                      emptyText="—"
-                      copied={copied === "ind"}
-                      onCopy={() => void handleCopy("ind", liveResult.individual)}
-                    />
-                  </div>
+                <p className="text-sm font-semibold text-slate-300">
+                  Sabre output will appear here automatically
+                </p>
+                <p className="mt-1.5 text-xs text-slate-500">
+                  Paste an itinerary — text or screenshot — no Convert button needed.
+                </p>
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-2 text-[10px] font-semibold tracking-wider text-slate-500">
+                  <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">ITINERARY</span>
+                  <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">OUTBOUND</span>
+                  <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">INBOUND</span>
+                  <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">INDIVIDUAL</span>
                 </div>
               </>
-            ) : (
-            <div className="fade-up flex flex-1 flex-col items-center justify-center rounded-2xl border border-dashed border-white/[0.09] bg-white/[0.015] px-6 py-16 text-center">
-              {text.trim() ? (
-                <p className="text-sm text-slate-500">
-                  Nothing convertible yet — check the notes above, or adjust the itinerary text.
-                </p>
-              ) : (
-                <>
-                  <div className="relative mx-auto mb-4 flex h-16 w-16 items-center justify-center">
-                    <span className="absolute inset-0 rounded-2xl bg-honey/10 blur-xl" />
-                    <span className="glass relative flex h-16 w-16 items-center justify-center rounded-2xl text-3xl">
-                      🍯
-                    </span>
-                  </div>
-                  <p className="text-sm font-semibold text-slate-300">
-                    Sabre output will appear here automatically
-                  </p>
-                  <p className="mt-1.5 text-xs text-slate-500">
-                    Paste an itinerary on the left — text or screenshot — no Convert button needed.
-                  </p>
-                  <div className="mt-5 flex flex-wrap items-center justify-center gap-2 text-[10px] font-semibold tracking-wider text-slate-500">
-                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">ITINERARY</span>
-                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">OUTBOUND</span>
-                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">INBOUND</span>
-                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">INDIVIDUAL</span>
-                  </div>
-                </>
-              )}
-            </div>
             )}
-          </section>
-        </div>
+          </div>
+        )}
 
-        <footer className="mt-12 pb-4 text-center lg:hidden">
+        <footer className="mt-12 pb-4 text-center">
           <div className="gold-rule mx-auto mb-4 h-px w-40 opacity-50" />
           <p className="text-[10.5px] tracking-wide text-slate-600">
             El 3asool Converter 🍯 · SABRE / GDS · Made by{" "}
@@ -1844,11 +1441,9 @@ interface LearningPanelProps {
   itineraries: LearnedItinerary[];
   flights: FlightCorrection[];
   aircraft: AircraftCorrection[];
-  classes: Array<{ key: string; airline: string; letter: string; cabin: Cabin }>;
   onForgetItinerary: (id: string) => void;
   onForgetFlight: (key: string) => void;
   onForgetAircraft: (phrase: string) => void;
-  onForgetClass: (airline: string, letter: string) => void;
   onClearAll: () => void;
 }
 
@@ -1860,14 +1455,12 @@ function LearningPanel({
   itineraries,
   flights,
   aircraft,
-  classes,
   onForgetItinerary,
   onForgetFlight,
   onForgetAircraft,
-  onForgetClass,
   onClearAll,
 }: LearningPanelProps) {
-  const total = itineraries.length + flights.length + aircraft.length + classes.length;
+  const total = itineraries.length + flights.length + aircraft.length;
   return (
     <div className="glass overflow-hidden rounded-2xl">
       <button
@@ -1983,37 +1576,6 @@ function LearningPanel({
                     <button
                       type="button"
                       onClick={() => onForgetFlight(flightKey(f.airline, f.num, f.origin, f.dest))}
-                      className="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[10.5px] font-semibold text-slate-400 transition hover:border-rose-300/40 hover:text-rose-200"
-                    >
-                      Forget
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {classes.length > 0 && (
-            <div>
-              <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                Learned Booking Classes
-              </p>
-              <ul className="space-y-1.5">
-                {classes.map((c) => (
-                  <li
-                    key={c.key}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-[11.5px] text-slate-300"
-                  >
-                    <span>
-                      <span className="font-bold text-slate-100">
-                        {c.airline}: {c.letter}
-                      </span>{" "}
-                      ={" "}
-                      <span className="font-semibold text-honey">{c.cabin}</span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => onForgetClass(c.airline, c.letter)}
                       className="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[10.5px] font-semibold text-slate-400 transition hover:border-rose-300/40 hover:text-rose-200"
                     >
                       Forget

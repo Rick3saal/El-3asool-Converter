@@ -12,6 +12,7 @@ import { cityToCode, sameCity } from "./airports";
 import { lookupFlightKnowledge } from "./learning";
 import { lookupKnownFlight } from "./knownFlights";
 import { lookupCabinForClass } from "./cabinClasses";
+import { isGoogleFlightsStyleC, parseGoogleFlightsStyleC } from "./googleflights";
 
 const MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
@@ -1611,6 +1612,20 @@ export function parseItineraryText(rawText: string): ParseResult {
       f.direction = idx < out.length ? "OUT" : "IN";
     });
     return { flights, issues, fastPath: true };
+  }
+
+  /* Google Flights / Style C fast path (ADDITIVE). */
+  if (isGoogleFlightsStyleC(text)) {
+    const gf = parseGoogleFlightsStyleC(text);
+    if (gf && gf.length > 0) {
+      const { out, inn } = splitDirections(gf);
+      const flights = [...out, ...inn];
+      flights.forEach((f, idx) => {
+        f.order = idx;
+        f.direction = idx < out.length ? "OUT" : "IN";
+      });
+      return { flights, issues, fastPath: false };
+    }
   }
 
   const { works } = parseGeneric(text);

@@ -95,6 +95,8 @@ const NAME_TO_CODE: Record<string, string> = {
   lot: "LO",
   "luxair": "LG",
   "lufthansa city airlines": "CL",
+  "discover airlines": "4Y",
+  "lufthansa discover": "4Y",
   "norwegian air shuttle": "DY",
   norwegian: "DY",
   "play airlines": "OG",
@@ -283,7 +285,7 @@ const CODES = new Set<string>([
   "VA", "VB", "VN", "VS", "VJ", "VY",
   "W6", "WB", "WF", "WN", "WS", "WY",
   "Y4", "Y8", "ZB", "ZG", "ZH",
-  "3U", "3K", "5J", "6E", "6J", "7C", "7M", "8M", "9U", "9W",
+  "3U", "3K", "4Y", "5J", "6E", "6J", "7C", "7M", "8M", "9U", "9W",
   "A3", "B6", "D7", "F8", "F9", "G3", "G4", "G8", "G9", "J2", "K6", "P2", "Q6", "T5", "U2", "W6", "Y4", "Y8",
 ]);
 
