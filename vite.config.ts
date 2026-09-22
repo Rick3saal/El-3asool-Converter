@@ -63,6 +63,13 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), tailwindcss(), sharingMetaUrls(siteUrl), viteSingleFile()],
+    // Dev-server only: allow sandboxed/remote preview hosts (e.g. *.e2b.app)
+    // to load the dev server. Production builds are static files and are
+    // unaffected by this setting.
+    server: {
+      host: true,
+      allowedHosts: true,
+    },
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "src"),
