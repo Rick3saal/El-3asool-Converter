@@ -9,9 +9,11 @@
  *
  * The user supplies their own API key, stored only in this browser.
  */
-import type { Cabin, RawFlight } from "./types";
+import type { Cabin, ConverterResult, Issue, ParsedDate, RawFlight, Segment } from "./types";
 import { timeToMinutes } from "./aiTime";
 import { findAircraftTokens, parseExplicitAircraftString } from "./aircraft";
+import { inferRouteEquipment, lookupKnownFlight } from "./knownFlights";
+import { lookupCabinForClass } from "./cabinClasses";
 
 export type AiProvider = "gemini" | "openai" | "custom";
 
@@ -27,14 +29,39 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   enabled: false,
   provider: "gemini",
   apiKey: "",
-  model: "gemini-2.0-flash",
+  model: "gemini-2.5-flash",
   baseUrl: "",
 };
 
 export function defaultModelFor(provider: AiProvider): string {
   if (provider === "openai") return "gpt-4o-mini";
   if (provider === "custom") return "gpt-4o-mini";
-  return "gemini-2.0-flash";
+  return "gemini-2.5-flash";
+}
+
+export function sanitizeModel(provider: AiProvider, model: string): string {
+  const m = (model || "").trim();
+  if (provider === "gemini") {
+    const valid = [
+      "gemini-2.5-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-3.7-flash",
+      "gemini-3.5-flash",
+      "gemini-3-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-3.6-flash",
+      "gemini-3.8-flash",
+      "gemini-2.5-flash-lite",
+    ];
+    if (valid.includes(m)) return m;
+    return "gemini-2.5-flash";
+  }
+  if (provider === "openai") {
+    const valid = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"];
+    if (valid.includes(m)) return m;
+    return "gpt-4o-mini";
+  }
+  return m || defaultModelFor(provider);
 }
 
 const SYSTEM_PROMPT = `You are a flight-itinerary extraction engine for a Sabre GDS converter.
@@ -56,8 +83,17 @@ Rules:
 - arrivalDayOffset: 0 same day, 1 next day (+1), 2 two days later.
 - cabin is one of FIRST, BUSINESS, PREMIUM, ECONOMY. bookingClass is the single
   letter if the source states one (e.g. "Business (P)" -> "P"), else "".
-- operatedBy: the operator name exactly as printed if the source says
-  "Operated by X" (keep the whole name, e.g. "SKYWEST DBA UNITED EXPRESS"), else "".
+  CRITICAL: Map booking class letter to the airline's specific fare bucket:
+  - British Airways (BA): T, W, E, Z = PREMIUM (World Traveller Plus); J, C, D, R, I = BUSINESS (Club World); F, A = FIRST; Y, B, H, K, M, L, V, S, N, Q, O, G = ECONOMY.
+  - Air France (AF): W, A, S = PREMIUM; J, C, D, I, Z = BUSINESS; P, F = FIRST; Y, B, M, U, K, H, L, Q, T, N, R, V, X, G = ECONOMY.
+  - Delta (DL): W, S = PREMIUM; J, C, D, I, Z = BUSINESS; F, P, A, G = FIRST; Y, B, M, H, Q, K, L, U, T, X, V, E = ECONOMY.
+  - United (UA): O, A, R = PREMIUM; J, C, D, Z, P = BUSINESS; Y, B, M, E, U, H, Q, V, W, S, T, L, K, G, N = ECONOMY.
+  - American (AA): W, P = PREMIUM; J, C, D, R, I = BUSINESS; F, A = FIRST; Y, H, K, M, L, V, G, S, N, Q, O = ECONOMY.
+  - Lufthansa (LH): G, E, N, R = PREMIUM; J, C, D, Z, P = BUSINESS; F, A = FIRST; Y, B, M, U, H, X, Q, V, W, S, T, L, K = ECONOMY.
+- operatedBy: the operator name if the source states "Operated by X" or codeshare info.
+  IF THE OPERATOR IS NOT STATED in the source for a codeshare or flight with '*' flag,
+  USE ONLINE LOOKUP (Google Search / flight status) to determine the actual operating carrier (e.g. Air Canada, Lufthansa, Air France, IndiGo, Horizon Air).
+- hasStarFlag: true if the segment in the source has an asterisk '*' flag (e.g. "AF*3775", "DL*8727", "UA*8466"), else false.
 - Preserve source order; it is usually outbound flights first, then the return.
 - Do NOT invent data. If a field is truly absent, use "" (or null).
 
@@ -66,9 +102,12 @@ Rules:
   "3h 0m" -> 180). NEVER use a layover/connection duration ("Layover in PHL
   (2h 0m)") — that belongs to the connection, not to any flight. If the flight
   itself shows no duration, use null.
-- aircraft: copy the aircraft text EXACTLY as printed (e.g. "Embraer ERJ-145",
-  "Airbus A321neo", "Boeing 737 MAX 9 Passenger"). Never leave it blank when
-  the source shows one.
+- aircraft: copy the aircraft text if printed in the source (e.g. "Embraer ERJ-145",
+  "Airbus A321neo", "Boeing 737 MAX 9 Passenger").
+  IF THE AIRCRAFT IS NOT STATED in the source (e.g. codeshares, schedules without equipment),
+  USE ONLINE LOOKUP (Google Search / flight status) to find the scheduled aircraft type
+  for that flight number and route (e.g. Boeing 777-300ER, Airbus A350-900, Airbus A220-300,
+  Boeing 787-9, Boeing 747-8, Airbus A320). Only leave "" if lookup yields no result.
 
 Return JSON of this exact shape:
 {"flights":[{
@@ -92,6 +131,7 @@ export interface AiFlightJson {
   cabin?: string;
   bookingClass?: string;
   operatedBy?: string;
+  hasStarFlag?: boolean;
   /** the flight's own block time in minutes (never a layover duration) */
   durationMinutes?: number | string | null;
   /** tolerated aliases some models emit instead of durationMinutes */
@@ -138,7 +178,7 @@ const MONTHS_ABBR: Record<string, number> = {
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
 };
 
-function parseDateField(d: AiFlightJson["date"]): { day: number; month: number } | null {
+function parseDateField(d: AiFlightJson["date"]): ParsedDate | null {
   if (!d) return null;
   if (typeof d === "object") {
     const day = Number(d.day);
@@ -146,12 +186,15 @@ function parseDateField(d: AiFlightJson["date"]): { day: number; month: number }
     if (day >= 1 && day <= 31 && month >= 1 && month <= 12) return { day, month };
     return null;
   }
-  // strings like "9NOV", "Nov 9", "11/09", "2025-11-09"
+  // strings like "02MAR", "3MAY", "9NOV", "Nov 9", "11/09", "2025-11-09"
   const s = String(d).trim();
   let m = /^(\d{1,2})\s*([A-Za-z]{3,})/.exec(s);
   if (m) {
     const mo = MONTHS_ABBR[m[2].slice(0, 3).toLowerCase()];
-    if (mo) return { day: parseInt(m[1], 10), month: mo };
+    if (mo) {
+      const raw = `${m[1].padStart(2, "0")}${m[2].slice(0, 3).toUpperCase()}`;
+      return { day: parseInt(m[1], 10), month: mo, raw };
+    }
   }
   m = /^([A-Za-z]{3,})\.?\s*(\d{1,2})/.exec(s);
   if (m) {
@@ -198,13 +241,31 @@ export function toRawFlights(json: { flights?: AiFlightJson[] }): RawFlight[] {
     const acTok = !acExplicit && acPhrase
       ? findAircraftTokens(acPhrase).find((t) => t.equip)
       : undefined;
-    const equip = acExplicit ?? acTok?.equip ?? undefined;
+    let equip = acExplicit ?? acTok?.equip ?? undefined;
 
     // The flight's own duration, if the model reported one.
     const elapsed =
       parseDurationField(j.durationMinutes) ??
       parseDurationField(j.duration) ??
       parseDurationField(j.elapsedMinutes);
+
+    let operatedBy = j.operatedBy ? j.operatedBy.toUpperCase().trim() : undefined;
+
+    // Check known-flight table before giving up on operator or equipment
+    const known = lookupKnownFlight(airline, number, origin, dest);
+    if (known) {
+      if (!operatedBy) operatedBy = known.operator;
+      if (!equip || equip === "---") equip = known.equip;
+    }
+    if (!equip || equip === "---") {
+      const inferred = inferRouteEquipment(airline, origin, dest, operatedBy);
+      if (inferred) equip = inferred;
+    }
+
+    const hasStarFlag =
+      j.hasStarFlag === true ||
+      (typeof j.flightNumber === "string" && j.flightNumber.includes("*")) ||
+      false;
 
     out.push({
       airline,
@@ -215,13 +276,16 @@ export function toRawFlights(json: { flights?: AiFlightJson[] }): RawFlight[] {
       dep: dep ?? undefined,
       arr: arr2 ?? undefined,
       arrDay: off === 1 || off === 2 ? (off as 1 | 2) : 0,
-      cabin: normCabin(j.cabin),
+      cabin: normCabin(j.cabin) || (j.bookingClass && /^[A-Z]$/i.test(j.bookingClass)
+        ? lookupCabinForClass(airline, j.bookingClass.toUpperCase())
+        : undefined),
       bookingClass: j.bookingClass && /^[A-Z]$/i.test(j.bookingClass) ? j.bookingClass.toUpperCase() : undefined,
       equip,
       equipRaw: acPhrase || undefined,
       elapsed,
       elapsedExplicit: elapsed !== undefined,
-      operatedBy: j.operatedBy ? j.operatedBy.toUpperCase() : undefined,
+      hasStarFlag,
+      operatedBy,
       order: i,
     });
   });
@@ -232,50 +296,149 @@ export function toRawFlights(json: { flights?: AiFlightJson[] }): RawFlight[] {
 /* Provider calls                                                      */
 /* ------------------------------------------------------------------ */
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function isRetryableError(err: unknown): boolean {
+  if (!err) return false;
+  const status = (err as { status?: number }).status;
+  if (status === 503 || status === 429 || status === 500 || status === 502 || status === 504 || status === 404) {
+    return true;
+  }
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    msg.includes("503") ||
+    msg.includes("429") ||
+    msg.includes("404") ||
+    msg.includes("not found") ||
+    msg.includes("unavailable") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("resource has been exhausted") ||
+    msg.includes("rate limit") ||
+    msg.includes("timeout") ||
+    msg.includes("abort") ||
+    msg.includes("etimedout") ||
+    msg.includes("econnreset") ||
+    msg.includes("fetch failed")
+  );
+}
+
 async function callGemini(text: string, s: AiSettings): Promise<string> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    s.model || "gemini-2.0-flash"
-  )}:generateContent?key=${encodeURIComponent(s.apiKey)}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: [{ role: "user", parts: [{ text }] }],
-      generationConfig: { responseMimeType: "application/json", temperature: 0 },
-    }),
-  });
-  if (!res.ok) throw new Error(`Gemini ${res.status}: ${await safeText(res)}`);
-  const data = await res.json();
-  const parts = data?.candidates?.[0]?.content?.parts;
-  const out = Array.isArray(parts) ? parts.map((p: { text?: string }) => p.text || "").join("") : "";
-  if (!out) throw new Error("Gemini returned no content.");
-  return out;
+  const primaryModel = sanitizeModel("gemini", s.model);
+  const modelsToTry = Array.from(
+    new Set([
+      primaryModel,
+      "gemini-2.5-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-3.7-flash",
+      "gemini-3.5-flash",
+      "gemini-3-flash",
+      "gemini-3.1-flash-lite",
+    ])
+  );
+
+  let lastError: unknown;
+  for (const model of modelsToTry) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      model
+    )}:generateContent?key=${encodeURIComponent(s.apiKey)}`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      // 1. Standard structured JSON mode (supported by all free and paid tier keys,
+      // zero search billing requirement, uses standard daily token quota).
+      let res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          contents: [{ role: "user", parts: [{ text }] }],
+          generationConfig: { responseMimeType: "application/json", temperature: 0 },
+        }),
+      });
+
+      // 2. If the endpoint rejects responseMimeType (400), try standard prompt call
+      if (!res.ok && res.status === 400) {
+        res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+            contents: [{ role: "user", parts: [{ text }] }],
+            generationConfig: { temperature: 0 },
+          }),
+        });
+      }
+
+      if (res.ok) {
+        const data = await res.json();
+        const parts = data?.candidates?.[0]?.content?.parts;
+        const out = Array.isArray(parts) ? parts.map((p: { text?: string }) => p.text || "").join("") : "";
+        if (out) return out;
+      } else {
+        const errBody = await safeText(res);
+        lastError = new Error(`Gemini ${res.status} (${model}): ${errBody}`);
+        // If 404 (model not found/retired) or 429 (rate limit on this model),
+        // try the next model in the fallback list before giving up.
+        if (res.status === 404 || res.status === 429) {
+          continue;
+        }
+        if (res.status === 503) {
+          throw lastError; // propagate for backoff retry
+        }
+      }
+    } catch (err) {
+      lastError = err;
+      if (isRetryableError(err)) {
+        throw err;
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError || "Gemini extraction failed."));
 }
 
 async function callOpenAI(text: string, s: AiSettings): Promise<string> {
   const base = (s.provider === "custom" && s.baseUrl ? s.baseUrl : "https://api.openai.com/v1").replace(/\/$/, "");
-  const res = await fetch(`${base}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${s.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: s.model || "gpt-4o-mini",
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: text },
-      ],
-    }),
-  });
-  if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await safeText(res)}`);
-  const data = await res.json();
-  const out = data?.choices?.[0]?.message?.content;
-  if (!out) throw new Error("OpenAI returned no content.");
-  return out;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const res = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${s.apiKey}`,
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: s.model || "gpt-4o-mini",
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: text },
+        ],
+      }),
+    });
+    if (!res.ok) {
+      const errBody = await safeText(res);
+      const err = new Error(`OpenAI ${res.status}: ${errBody}`);
+      (err as { status?: number }).status = res.status;
+      throw err;
+    }
+    const data = await res.json();
+    const out = data?.choices?.[0]?.message?.content;
+    if (!out) throw new Error("OpenAI returned no content.");
+    return out;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function safeText(res: Response): Promise<string> {
@@ -303,13 +466,101 @@ function extractJson(raw: string): unknown {
   }
 }
 
+async function fetchWithRetry(
+  text: string,
+  settings: AiSettings,
+  onStatus?: (msg: string) => void
+): Promise<string> {
+  const delays = [2000, 5000, 10000];
+  const primarySettings = { ...settings };
+  let fallbackSettings: AiSettings | null = null;
+
+  if (settings.provider === "gemini") {
+    const fallbackModel =
+      settings.model === "gemini-1.5-flash" ? "gemini-2.0-flash" : "gemini-1.5-flash";
+    fallbackSettings = { ...settings, model: fallbackModel };
+  } else if (settings.provider === "openai") {
+    const fallbackModel = settings.model === "gpt-4o" ? "gpt-4o-mini" : "gpt-4o";
+    fallbackSettings = { ...settings, model: fallbackModel };
+  }
+
+  const callProvider = (s: AiSettings) =>
+    s.provider === "gemini" ? callGemini(text, s) : callOpenAI(text, s);
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await callProvider(primarySettings);
+    } catch (err) {
+      lastError = err;
+      if (attempt < delays.length && isRetryableError(err)) {
+        onStatus?.("Retrying lookup...");
+        await sleep(delays[attempt]);
+        continue;
+      }
+      break;
+    }
+  }
+
+  if (fallbackSettings) {
+    onStatus?.("Retrying lookup...");
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      try {
+        return await callProvider(fallbackSettings);
+      } catch (err) {
+        lastError = err;
+        if (attempt < delays.length && isRetryableError(err)) {
+          onStatus?.("Retrying lookup...");
+          await sleep(delays[attempt]);
+          continue;
+        }
+        break;
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError || "AI extraction failed."));
+}
+
 /** Send text to the configured AI provider and return structured flights. */
-export async function extractFlightsWithAI(text: string, settings: AiSettings): Promise<RawFlight[]> {
+export async function extractFlightsWithAI(
+  text: string,
+  settings: AiSettings,
+  onStatus?: (status: string) => void
+): Promise<RawFlight[]> {
   if (!settings.apiKey) throw new Error("No API key configured.");
-  const content =
-    settings.provider === "gemini" ? await callGemini(text, settings) : await callOpenAI(text, settings);
+  const content = await fetchWithRetry(text, settings, onStatus);
   const json = extractJson(content) as { flights?: AiFlightJson[] };
   const flights = toRawFlights(json);
   if (flights.length === 0) throw new Error("The AI did not find any flights in that text.");
   return flights;
+}
+
+/**
+ * Determines whether the AI assist step should automatically run
+ * when "Enable AI Assist" is active.
+ *
+ * Conditions:
+ * 1. Any segment has equip "---" (equipment lookup failed / missing)
+ * 2. Segment has star flag (*) and text doesn't name an operator
+ * 3. Airline + class letter pair is not confirmed or learned
+ * 4. Parser held back segments due to incomplete data
+ */
+export function shouldAutoRunAi(res: ConverterResult): boolean {
+  if (res.segments.length === 0) return false;
+  if (res.failedEquipmentFlights && res.failedEquipmentFlights.length > 0) return true;
+  if (res.failedOperatorFlights && res.failedOperatorFlights.length > 0) return true;
+  if (res.unknownClassQuestions && res.unknownClassQuestions.length > 0) return true;
+  if (res.segments.some((s: Segment) => s.equip === "---")) return true;
+  if (res.segments.some((s: Segment) => s.hasStarFlag && !s.operatedBy)) return true;
+  if (
+    res.issues.some(
+      (i: Issue) =>
+        i.text.toLowerCase().includes("held back") ||
+        i.text.toLowerCase().includes("incomplete")
+    )
+  ) {
+    return true;
+  }
+  return false;
 }

@@ -40,6 +40,14 @@ export function parseExplicitAircraftString(raw: string, airline?: string): stri
   const s = raw.trim();
   if (!s || s === "---") return null;
 
+  // Exact 3-character Sabre equipment code (e.g. "320", "789", "77W", "350", "E75", "900", "73H")
+  if (/^[A-Z0-9]{3}$/i.test(s)) {
+    const u = s.toUpperCase();
+    if (airline === "AC" && (u === "175" || u === "E75")) return "E75";
+    if (airline === "AC" && (u === "170" || u === "E70")) return "E70";
+    return u;
+  }
+
   // 1. Boeing 737 MAX series (with or without "Passenger"/"Pax")
   if (/Boeing\s*737\s*MAX\s*9|\b737\s*MAX\s*9|\b737\s*-\s*9\s*MAX\b/i.test(s)) return "7M9";
   if (/Boeing\s*737\s*MAX\s*8|\b737\s*MAX\s*8|\b737\s*-\s*8\s*MAX\b/i.test(s)) return "7M8";
@@ -480,6 +488,15 @@ export function findAircraftTokens(text: string): AircraftToken[] {
   b717.lastIndex = 0;
   while ((m = b717.exec(text)) !== null) {
     push("717", m[0], m.index, m.index + m[0].length);
+  }
+
+  // 15. Bare Sabre equipment code before elapsed time or line format:
+  // e.g. "777 9.45 0 N" or "320 1.45 0 N"
+  const sabreEquipLine =
+    /\b([0-9][0-9A-Za-z]{2})\s+(?:\d{1,2}\.\d{2}\s+\d+\s+[A-Z]|\bCABIN\b)/g;
+  sabreEquipLine.lastIndex = 0;
+  while ((m = sabreEquipLine.exec(text)) !== null) {
+    push(m[1].toUpperCase(), m[1], m.index, m.index + m[1].length);
   }
 
   return tokens.sort((a, b) => a.start - b.start);
