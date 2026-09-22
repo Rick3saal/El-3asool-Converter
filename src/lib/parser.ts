@@ -10,6 +10,12 @@ import { airlineFromName, isAirlineCode, AIRLINE_NAMES } from "./airlines";
 import { findAircraftTokens, parseExplicitAircraftString } from "./aircraft";
 import { cityToCode, sameCity } from "./airports";
 import { lookupFlightKnowledge } from "./learning";
+import { cleanOperator } from "./operator";
+import { isGoogleFlightsStyleC, parseGoogleFlightsStyleC } from "./googleflights";
+
+/* Operator normalization lives in ./operator so the Google Flights reader and
+ * this parser share ONE implementation. Re-exported for existing importers. */
+export { cleanOperator };
 
 const MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
@@ -82,21 +88,6 @@ interface Tok {
 
 const WEEKDAY = "(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*";
 const MON_NAME = `(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*`;
-
-export function cleanOperator(raw: string): string | null {
-  // Keep the operator's full trading name ("SKYWEST DBA UNITED EXPRESS").
-  // Only strip trailing codeshare flight references and stray punctuation.
-  let op = raw
-    .replace(/\s*\([^)]*\)\s*/g, " ")
-    .replace(/\s+as\s+flight\b.*$/i, "")
-    .replace(/\s+(?:flight|flt)\s*[A-Z]{0,3}\s*\d{1,4}\s*$/i, "")
-    .replace(/[.。,;:]+$/, "")
-    .replace(/\)+\s*$/, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!op || op.length < 2 || op.length > 70) return null;
-  return op.toUpperCase();
-}
 
 function tokenize(text: string): { toks: Tok[]; opbyRanges: Array<[number, number]> } {
   const toks: Tok[] = [];
@@ -1341,6 +1332,24 @@ export function parseItineraryText(rawText: string): ParseResult {
       f.direction = idx < out.length ? "OUT" : "IN";
     });
     return { flights, issues, fastPath: true };
+  }
+
+  /* Google Flights / Style C fast path (ADDITIVE).
+   * Only runs for text recognised as a Google Flights card layout, and only
+   * takes over when it can read EVERY printed flight number into a complete
+   * leg. Anything else (Matrix / ITA, e-tickets, row styles, …) falls straight
+   * through to the untouched generic parser below. */
+  if (isGoogleFlightsStyleC(text)) {
+    const gf = parseGoogleFlightsStyleC(text);
+    if (gf && gf.length > 0) {
+      const { out, inn } = splitDirections(gf);
+      const flights = [...out, ...inn];
+      flights.forEach((f, idx) => {
+        f.order = idx;
+        f.direction = idx < out.length ? "OUT" : "IN";
+      });
+      return { flights, issues, fastPath: false };
+    }
   }
 
   const { works } = parseGeneric(text);

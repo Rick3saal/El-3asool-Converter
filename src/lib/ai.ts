@@ -21,6 +21,8 @@ export interface AiSettings {
   apiKey: string;
   model: string;
   baseUrl: string; // for "custom" (OpenAI-compatible)
+  /** optional comma/newline separated extra models tried when the first is unavailable */
+  fallbackModels?: string;
 }
 
 export const DEFAULT_AI_SETTINGS: AiSettings = {
@@ -29,12 +31,121 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   apiKey: "",
   model: "gemini-2.0-flash",
   baseUrl: "",
+  fallbackModels: "",
 };
 
 export function defaultModelFor(provider: AiProvider): string {
   if (provider === "openai") return "gpt-4o-mini";
   if (provider === "custom") return "gpt-4o-mini";
   return "gemini-2.0-flash";
+}
+
+/** Built-in fallback chain used when the configured model is unavailable. */
+export function builtInFallbackModels(provider: AiProvider): string[] {
+  if (provider === "gemini") {
+    return ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-flash-latest", "gemini-1.5-flash"];
+  }
+  if (provider === "openai") return ["gpt-4o-mini", "gpt-4o"];
+  return [];
+}
+
+/** Ordered, de-duplicated list of models to try: configured first, then fallbacks. */
+export function modelChain(s: AiSettings): string[] {
+  const user = (s.fallbackModels ?? "")
+    .split(/[,\n]/)
+    .map((m) => m.trim())
+    .filter(Boolean);
+  const chain = [s.model || defaultModelFor(s.provider), ...user, ...builtInFallbackModels(s.provider)];
+  const seen = new Set<string>();
+  return chain.filter((m) => m && !seen.has(m) && (seen.add(m), true));
+}
+
+/* ------------------------------------------------------------------ */
+/* transient API error handling (HTTP 503 & friends)                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * An AI provider failure. `transient` marks overload/rate-limit/network
+ * conditions (503 UNAVAILABLE, 429, 5xx, connection drops) that say nothing
+ * about the itinerary itself and must never be reported as a parsing error.
+ */
+export class AiError extends Error {
+  readonly status?: number;
+  readonly transient: boolean;
+  readonly model?: string;
+  /** true when the key/permissions are wrong — retrying other models is pointless */
+  readonly fatal: boolean;
+  /** seconds requested by the provider's Retry-After header, when present */
+  readonly retryAfterSec?: number;
+
+  constructor(
+    message: string,
+    opts: {
+      status?: number;
+      transient?: boolean;
+      model?: string;
+      fatal?: boolean;
+      retryAfterSec?: number;
+    } = {}
+  ) {
+    super(message);
+    this.name = "AiError";
+    this.status = opts.status;
+    this.transient = opts.transient ?? false;
+    this.model = opts.model;
+    this.fatal = opts.fatal ?? false;
+    this.retryAfterSec = opts.retryAfterSec;
+  }
+}
+
+/** Overloaded / rate-limited / temporarily broken — safe and useful to retry. */
+export function isTransientStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
+
+/** Wrong key or no access — retrying (any model) cannot help. */
+function isFatalStatus(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
+/** Model missing/unsupported for this key — skip to the next model in the chain. */
+function isModelUnavailableStatus(status: number): boolean {
+  return status === 404 || status === 400;
+}
+
+export interface AiAttemptInfo {
+  model: string;
+  attempt: number;
+  status?: number;
+  willRetryInMs?: number;
+  message: string;
+}
+
+export interface AiRunOptions {
+  /** max attempts per model (default 3) */
+  attemptsPerModel?: number;
+  /** base backoff delay in ms (default 700) */
+  baseDelayMs?: number;
+  /** progress/telemetry hook — lets the UI say "retrying…" instead of showing a raw 503 */
+  onAttempt?: (info: AiAttemptInfo) => void;
+  /** injectable sleep (tests) */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Exponential backoff with jitter, honouring a Retry-After header when present. */
+export function backoffDelay(attempt: number, base: number, retryAfterSec?: number): number {
+  if (retryAfterSec !== undefined && retryAfterSec > 0) return Math.min(retryAfterSec * 1000, 20000);
+  const exp = base * Math.pow(2, attempt - 1);
+  return Math.min(Math.round(exp + Math.random() * base), 20000);
+}
+
+function parseRetryAfter(res: Response): number | undefined {
+  const h = res.headers?.get?.("retry-after");
+  if (!h) return undefined;
+  const n = Number(h);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
 const SYSTEM_PROMPT = `You are a flight-itinerary extraction engine for a Sabre GDS converter.
@@ -232,49 +343,84 @@ export function toRawFlights(json: { flights?: AiFlightJson[] }): RawFlight[] {
 /* Provider calls                                                      */
 /* ------------------------------------------------------------------ */
 
-async function callGemini(text: string, s: AiSettings): Promise<string> {
+async function callGemini(text: string, s: AiSettings, model?: string): Promise<string> {
+  const useModel = model || s.model || "gemini-2.0-flash";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    s.model || "gemini-2.0-flash"
+    useModel
   )}:generateContent?key=${encodeURIComponent(s.apiKey)}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: [{ role: "user", parts: [{ text }] }],
-      generationConfig: { responseMimeType: "application/json", temperature: 0 },
-    }),
-  });
-  if (!res.ok) throw new Error(`Gemini ${res.status}: ${await safeText(res)}`);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [{ role: "user", parts: [{ text }] }],
+        generationConfig: { responseMimeType: "application/json", temperature: 0 },
+      }),
+    });
+  } catch (e) {
+    // network/DNS/CORS drop — transient, never an itinerary problem
+    throw new AiError(e instanceof Error ? e.message : "Network error", {
+      transient: true,
+      model: useModel,
+    });
+  }
+  if (!res.ok) {
+    throw new AiError(`Gemini ${res.status}: ${await safeText(res)}`, {
+      status: res.status,
+      transient: isTransientStatus(res.status),
+      fatal: isFatalStatus(res.status),
+      model: useModel,
+      retryAfterSec: parseRetryAfter(res),
+    });
+  }
   const data = await res.json();
   const parts = data?.candidates?.[0]?.content?.parts;
   const out = Array.isArray(parts) ? parts.map((p: { text?: string }) => p.text || "").join("") : "";
-  if (!out) throw new Error("Gemini returned no content.");
+  if (!out) throw new AiError("Gemini returned no content.", { transient: true, model: useModel });
   return out;
 }
 
-async function callOpenAI(text: string, s: AiSettings): Promise<string> {
+async function callOpenAI(text: string, s: AiSettings, model?: string): Promise<string> {
   const base = (s.provider === "custom" && s.baseUrl ? s.baseUrl : "https://api.openai.com/v1").replace(/\/$/, "");
-  const res = await fetch(`${base}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${s.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: s.model || "gpt-4o-mini",
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: text },
-      ],
-    }),
-  });
-  if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await safeText(res)}`);
+  const useModel = model || s.model || "gpt-4o-mini";
+  let res: Response;
+  try {
+    res = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${s.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: useModel,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: text },
+        ],
+      }),
+    });
+  } catch (e) {
+    throw new AiError(e instanceof Error ? e.message : "Network error", {
+      transient: true,
+      model: useModel,
+    });
+  }
+  if (!res.ok) {
+    throw new AiError(`OpenAI ${res.status}: ${await safeText(res)}`, {
+      status: res.status,
+      transient: isTransientStatus(res.status),
+      fatal: isFatalStatus(res.status),
+      model: useModel,
+      retryAfterSec: parseRetryAfter(res),
+    });
+  }
   const data = await res.json();
   const out = data?.choices?.[0]?.message?.content;
-  if (!out) throw new Error("OpenAI returned no content.");
+  if (!out) throw new AiError("OpenAI returned no content.", { transient: true, model: useModel });
   return out;
 }
 
@@ -303,13 +449,107 @@ function extractJson(raw: string): unknown {
   }
 }
 
+/**
+ * Call the provider with automatic recovery from transient failures.
+ *
+ * Order of events for a model:
+ *   attempt 1 → 503 UNAVAILABLE → wait (exponential backoff + jitter)
+ *   attempt 2 → 503            → wait longer
+ *   attempt 3 → 503            → give up on THIS model, try the next one
+ * When every model is exhausted the last transient error is reported as
+ * "AI Assist is temporarily unavailable", never as an itinerary problem.
+ */
+export async function callModelWithRetry(
+  text: string,
+  settings: AiSettings,
+  opts: AiRunOptions = {}
+): Promise<{ content: string; model: string }> {
+  const attemptsPerModel = Math.max(1, opts.attemptsPerModel ?? 3);
+  const baseDelay = opts.baseDelayMs ?? 700;
+  const sleep = opts.sleep ?? defaultSleep;
+  const models = modelChain(settings);
+
+  let lastError: AiError | null = null;
+
+  for (const model of models) {
+    for (let attempt = 1; attempt <= attemptsPerModel; attempt++) {
+      try {
+        const content =
+          settings.provider === "gemini"
+            ? await callGemini(text, settings, model)
+            : await callOpenAI(text, settings, model);
+        return { content, model };
+      } catch (e) {
+        const err =
+          e instanceof AiError
+            ? e
+            : new AiError(e instanceof Error ? e.message : String(e), { model, transient: false });
+        lastError = err;
+
+        // wrong key / no access: stop everything, nothing else can succeed
+        if (err.fatal) throw err;
+
+        // model not available for this key: move straight to the next model
+        if (err.status !== undefined && isModelUnavailableStatus(err.status)) {
+          opts.onAttempt?.({
+            model,
+            attempt,
+            status: err.status,
+            message: `Model "${model}" is unavailable — trying the next model.`,
+          });
+          break;
+        }
+
+        if (!err.transient) throw err;
+
+        const isLastAttempt = attempt === attemptsPerModel;
+        if (isLastAttempt) {
+          opts.onAttempt?.({
+            model,
+            attempt,
+            status: err.status,
+            message: `"${model}" is busy — trying the next model.`,
+          });
+          break;
+        }
+        const wait = backoffDelay(attempt, baseDelay, err.retryAfterSec);
+        opts.onAttempt?.({
+          model,
+          attempt,
+          status: err.status,
+          willRetryInMs: wait,
+          message: `AI is busy (${err.status ?? "network"}) — retrying in ${Math.round(wait / 100) / 10}s…`,
+        });
+        await sleep(wait);
+      }
+    }
+  }
+
+  throw new AiError(
+    "AI Assist is temporarily unavailable — the model is overloaded right now. Your itinerary is fine; try again shortly or use the local parser result.",
+    { status: lastError?.status, transient: true, model: lastError?.model }
+  );
+}
+
 /** Send text to the configured AI provider and return structured flights. */
-export async function extractFlightsWithAI(text: string, settings: AiSettings): Promise<RawFlight[]> {
-  if (!settings.apiKey) throw new Error("No API key configured.");
-  const content =
-    settings.provider === "gemini" ? await callGemini(text, settings) : await callOpenAI(text, settings);
-  const json = extractJson(content) as { flights?: AiFlightJson[] };
+export async function extractFlightsWithAI(
+  text: string,
+  settings: AiSettings,
+  opts: AiRunOptions = {}
+): Promise<RawFlight[]> {
+  if (!settings.apiKey) throw new AiError("No API key configured.", { fatal: true });
+  const { content } = await callModelWithRetry(text, settings, opts);
+  let json: { flights?: AiFlightJson[] };
+  try {
+    json = extractJson(content) as { flights?: AiFlightJson[] };
+  } catch {
+    // A malformed reply is an AI problem, not an itinerary problem, and it must
+    // never produce partial or invented segments.
+    throw new AiError("The AI returned a malformed response — no segments were generated.", {
+      transient: true,
+    });
+  }
   const flights = toRawFlights(json);
-  if (flights.length === 0) throw new Error("The AI did not find any flights in that text.");
+  if (flights.length === 0) throw new AiError("The AI did not find any flights in that text.");
   return flights;
 }

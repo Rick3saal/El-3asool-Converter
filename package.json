@@ -15,7 +15,8 @@
     "selftest": "tsx scripts/selftest.ts",
     "selftest:extra": "tsx scripts/extratests.ts",
     "cathaycheck": "tsx scripts/cathaycheck.ts",
-    "check": "npm run typecheck && npm run selftest && npm run selftest:extra && npm run cathaycheck && npm run build",
+    "selftest:stylec": "tsx scripts/styleCtests.ts",
+    "check": "npm run typecheck && npm run selftest && npm run selftest:extra && npm run cathaycheck && npm run selftest:stylec && npm run build",
     "deploy:vercel": "npx --yes vercel@latest build --prod && npx --yes vercel@latest deploy --prebuilt --prod"
   },
   "dependencies": {
