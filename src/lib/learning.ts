@@ -239,8 +239,23 @@ export function setLearningEnabled(on: boolean): void {
 
 /* ---------------- public API: User Corrections ---------------- */
 
+export function canSaveItinerary(flights: (RawFlight | Segment)[]): boolean {
+  if (!flights || flights.length === 0) return false;
+  for (const f of flights) {
+    const equip = "equip" in f ? f.equip : undefined;
+    if (!equip || equip === "---") return false;
+    const hasStar = "hasStarFlag" in f ? f.hasStarFlag : false;
+    if (hasStar && !f.operatedBy) return false;
+  }
+  return true;
+}
+
 /** Learn one user-edited flight (full structural snapshot of the edit). */
 export function learnFlight(seg: Segment): void {
+  // Never save or cache a result that contains "---" or a missing operator for a star flight
+  if (!seg.equip || seg.equip === "---") return;
+  if (seg.hasStarFlag && !seg.operatedBy) return;
+
   const corr: FlightCorrection = {
     airline: seg.airline,
     num: seg.num,
@@ -357,7 +372,10 @@ function buildItinerarySummary(flights: RawFlight[]): string {
  * Automatically indexes the full itinerary, each individual flight, and
  * any aircraft phrases.
  */
-export function learnItinerary(rawText: string, flights: RawFlight[]): LearnedItinerary {
+export function learnItinerary(rawText: string, flights: RawFlight[]): LearnedItinerary | null {
+  // Never save or cache a result that contains "---", a missing operator, or incomplete lookup
+  if (!canSaveItinerary(flights)) return null;
+
   const normalizedKey = normalizeItineraryKey(rawText);
   const skeletonKey = skeletonItineraryKey(rawText);
   const summary = buildItinerarySummary(flights);
@@ -469,6 +487,21 @@ export function forgetItinerary(id: string): void {
   const map = itineraryMap();
   map.delete(id);
   saveItineraries(map);
+}
+
+export function forgetItineraryForText(rawText: string): boolean {
+  const normKey = normalizeItineraryKey(rawText);
+  const skelKey = skeletonItineraryKey(rawText);
+  const map = itineraryMap();
+  let deleted = false;
+  for (const [id, it] of Array.from(map.entries())) {
+    if (it.normalizedKey === normKey || (skelKey.length > 20 && it.skeletonKey === skelKey)) {
+      map.delete(id);
+      deleted = true;
+    }
+  }
+  if (deleted) saveItineraries(map);
+  return deleted;
 }
 
 export function forgetFlight(key: string): void {
