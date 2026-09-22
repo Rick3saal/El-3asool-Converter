@@ -219,19 +219,27 @@ function OutputCard({
   emptyText,
   copied,
   onCopy,
+  fill,
 }: {
   title: string;
   text: string;
   emptyText?: string;
   copied: boolean;
   onCopy: () => void;
+  /** fills its grid cell with an internal scroll area on large screens */
+  fill?: boolean;
 }) {
   const has = text.length > 0;
   const lineCount = has ? text.split("\n").filter((l) => l.trim()).length : 0;
   return (
-    <section className="glass glass-hover fade-up group relative overflow-hidden rounded-2xl">
+    <section
+      className={cn(
+        "glass glass-hover fade-up group relative overflow-hidden rounded-2xl",
+        fill && "xl:flex xl:min-h-0 xl:flex-col"
+      )}
+    >
       <div className="card-accent absolute inset-x-0 top-0 h-px opacity-70 transition-opacity duration-300 group-hover:opacity-100" />
-      <header className="flex items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-3.5">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-3.5">
         <div className="flex items-center gap-2.5">
           <span
             className={cn(
@@ -249,7 +257,7 @@ function OutputCard({
         <CopyButton label="Copy" copied={copied} disabled={!has} onCopy={onCopy} />
       </header>
       {has ? (
-        <pre className="sabre-scroll overflow-x-auto whitespace-pre px-5 py-4 font-mono text-[12.5px] leading-[1.8] text-slate-100 selection:bg-honey/30">
+        <pre className="sabre-scroll overflow-x-auto whitespace-pre px-5 py-4 font-mono text-[12.5px] leading-[1.8] text-slate-100 selection:bg-honey/30 xl:min-h-0 xl:flex-1 xl:overflow-auto">
           {text}
         </pre>
       ) : (
@@ -648,7 +656,7 @@ export default function App() {
   const processing = ocrStatus === "processing";
 
   return (
-    <div className="relative min-h-screen overflow-x-hidden">
+    <div className="relative flex min-h-screen flex-col overflow-x-hidden xl:h-[100dvh] xl:min-h-0 xl:overflow-hidden">
       {/* backdrop */}
       <div className="pointer-events-none fixed inset-0">
         <div className="app-grid absolute inset-0" />
@@ -659,9 +667,48 @@ export default function App() {
         <div className="absolute inset-x-0 bottom-0 h-80 bg-gradient-to-t from-[#05070d] to-transparent" />
       </div>
 
-      <main className="relative mx-auto w-full max-w-5xl px-4 pb-20 pt-9 sm:px-6">
-        {/* ============ header ============ */}
-        <header className="text-center">
+      {/* ============ compact top rail — one row on large screens ============ */}
+      <header className="relative hidden shrink-0 items-center gap-4 border-b border-white/[0.07] bg-[#05070d]/60 px-4 py-2 backdrop-blur-md lg:flex xl:px-6">
+        <div className="flex min-w-0 shrink-0 items-center gap-2.5">
+          <span className="glass flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-lg">🍯</span>
+          <div className="min-w-0">
+            <p className="truncate text-[15px] font-extrabold leading-tight">
+              <span className="text-gold">El 3asool Converter</span>
+            </p>
+            <p className="mt-0.5 truncate text-[9.5px] font-semibold tracking-[0.24em] text-slate-500">
+              SABRE / GDS ITINERARY CONVERTER
+            </p>
+          </div>
+        </div>
+
+        <div className="flex min-w-0 flex-1 items-center justify-center gap-3">
+          <span className="gold-rule hidden h-px flex-1 xl:block" />
+          <span className="text-[10px] text-honey/60">✦</span>
+          <div
+            dir="rtl"
+            lang="ar"
+            className="font-arabic whitespace-nowrap px-1 text-[1.05rem] leading-7 text-amber-50 [text-shadow:0_2px_18px_rgba(245,197,24,0.25)] xl:text-[1.2rem]"
+          >
+            اللَّهُمَّ صَلِّ وَسَلِّمْ عَلَى نَبِيِّنَا مُحَمَّدٍ
+          </div>
+          <span className="text-[10px] text-honey/60">✦</span>
+          <span className="gold-rule hidden h-px flex-1 xl:block" />
+        </div>
+
+        <div className="flex shrink-0 items-center gap-3">
+          <span className="inline-flex items-center gap-2 rounded-full border border-honey/25 bg-honey/[0.07] px-3 py-1 text-[9.5px] font-bold tracking-[0.3em] text-honey">
+            <span className="glow-pulse h-1.5 w-1.5 rounded-full bg-honey" />
+            SABRE / GDS
+          </span>
+          <p className="hidden text-right text-[9.5px] leading-tight tracking-wide text-slate-600 2xl:block">
+            Made by <span className="text-slate-500">Ziad El Asaal</span>
+          </p>
+        </div>
+      </header>
+
+      <main className="relative mx-auto flex w-full max-w-5xl flex-col px-4 pb-20 pt-9 sm:px-6 xl:min-h-0 xl:max-w-none xl:flex-1 xl:px-5 xl:pb-4 xl:pt-4 2xl:px-6">
+        {/* ============ header (small screens) ============ */}
+        <header className="text-center lg:hidden">
           {/* Arabic remembrance — framed, centered, RTL */}
           <div className="fade-up relative mx-auto max-w-3xl">
             <div className="pointer-events-none absolute inset-0 -z-10 rounded-[28px] bg-[radial-gradient(60%_100%_at_50%_50%,rgba(245,197,24,0.10),transparent_72%)]" />
@@ -710,9 +757,11 @@ export default function App() {
           </p>
         </header>
 
-        {/* ============ input card ============ */}
-        <section className="glass fade-up mt-9 rounded-2xl p-4 sm:p-5">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        {/* ============ workspace — paste left, answers right ============ */}
+        <div className="mt-9 flex flex-col gap-4 xl:mt-0 xl:grid xl:min-h-0 xl:flex-1 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] xl:grid-rows-[minmax(0,1fr)] xl:items-stretch">
+          {/* ============ input card (left pane) ============ */}
+          <section className="glass fade-up flex flex-col rounded-2xl xl:min-h-0 xl:overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-4 sm:px-5 sm:pt-5 xl:shrink-0">
             <h2 className="flex items-center gap-2 text-[11px] font-bold tracking-[0.25em] text-slate-300">
               <span className="text-honey/70">❯</span>
               PASTE ITINERARY — TEXT OR SCREENSHOT
@@ -750,13 +799,15 @@ export default function App() {
                 Clear
               </button>
             </div>
-          </div>
+            </div>
 
-          <div
-            onDragOver={(e) => e.preventDefault()}
+            {/* scrollable paste area — toolbar stays pinned, the box fills the pane */}
+            <div className="sabre-scroll px-4 pb-4 pt-3.5 sm:px-5 sm:pb-5 xl:flex xl:min-h-0 xl:flex-1 xl:flex-col xl:overflow-y-auto">
+            <div
+              onDragOver={(e) => e.preventDefault()}
             onDrop={onDrop}
             className={cn(
-              "relative rounded-xl border transition-all duration-300",
+              "relative rounded-xl border transition-all duration-300 xl:flex xl:min-h-[190px] xl:flex-1 xl:flex-col",
               processing
                 ? "border-honey/45 bg-honey/[0.04]"
                 : "border-white/10 bg-slate-950/70 focus-within:border-honey/55 focus-within:shadow-[0_0_0_4px_rgba(245,197,24,0.07)]"
@@ -768,7 +819,7 @@ export default function App() {
               onChange={(e) => setText(e.target.value)}
               spellCheck={false}
               placeholder={"Paste a flight itinerary here…\n\nText works: ⌘V / Ctrl+V\nScreenshots work too: ⌘V / Ctrl+V directly in this box\n\nOr drag & drop an image."}
-              className="sabre-scroll block min-h-[190px] w-full resize-y rounded-xl bg-transparent p-4 font-mono text-[13px] leading-relaxed text-slate-100 placeholder:text-slate-600 focus:outline-none"
+              className="sabre-scroll block min-h-[190px] w-full resize-y rounded-xl bg-transparent p-4 font-mono text-[13px] leading-relaxed text-slate-100 placeholder:text-slate-600 focus:outline-none xl:min-h-0 xl:flex-1 xl:resize-none"
             />
 
             {/* OCR overlay */}
@@ -981,124 +1032,144 @@ export default function App() {
               </div>
             </div>
           )}
-        </section>
 
-        {/* ============ issues ============ */}
-        {(showIssues.length > 0 || infoIssue) && (
-          <div className="mt-5 space-y-2">
-            {showIssues.map((issue, idx) => (
-              <IssueRow key={idx} issue={issue} />
-            ))}
-            {infoIssue && <IssueRow issue={infoIssue} />}
-          </div>
-        )}
-
-        {/* ============ output ============ */}
-        {liveResult && liveResult.hasOutput ? (
-          <div className="mt-6 space-y-5">
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-honey/25 bg-honey/[0.07] px-3 py-1 text-[10.5px] font-bold tracking-[0.12em] text-honey">
-                <span className="h-1.5 w-1.5 rounded-full bg-honey" />
-                {liveResult.segments.length} SEGMENT{liveResult.segments.length > 1 ? "S" : ""}
-              </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-slate-300">
-                <span className="h-1.5 w-1.5 rounded-full bg-sky-400/80" />
-                {outCount} OUTBOUND
-              </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-slate-300">
-                <span className="h-1.5 w-1.5 rounded-full bg-violet-400/80" />
-                {inCount} INBOUND
-              </span>
-            </div>
+            {/* ============ issues — left pane, under the paste box ============ */}
+            {(showIssues.length > 0 || infoIssue) && (
+              <div className="mt-3 space-y-2 xl:shrink-0">
+                {showIssues.map((issue, idx) => (
+                  <IssueRow key={idx} issue={issue} />
+                ))}
+                {infoIssue && <IssueRow issue={infoIssue} />}
+              </div>
+            )}
 
             {/* ---- review & edit flights ---- */}
-            <FlightEditor
-              open={editorOpen}
-              onToggle={() => setEditorOpen((v) => !v)}
-              segments={edited ?? liveResult.segments}
-              resultSegments={result?.segments ?? []}
-              editedCount={editedCount}
-              onUpdate={updateSegment}
-              onReset={resetEdits}
-              learningOn={learningOn}
-            />
+            {liveResult && liveResult.hasOutput && (
+              <div className="mt-3 space-y-3 xl:shrink-0">
+                <FlightEditor
+                  open={editorOpen}
+                  onToggle={() => setEditorOpen((v) => !v)}
+                  segments={edited ?? liveResult.segments}
+                  resultSegments={result?.segments ?? []}
+                  editedCount={editedCount}
+                  onUpdate={updateSegment}
+                  onReset={resetEdits}
+                  learningOn={learningOn}
+                />
 
-            <OutputCard
-              title="SABRE ITINERARY"
-              text={liveResult.itinerary}
-              emptyText="Paste an itinerary to build the main entry."
-              copied={copied === "itin"}
-              onCopy={() => void handleCopy("itin", liveResult.itinerary)}
-            />
-            <OutputCard
-              title="OUTBOUND"
-              text={liveResult.outbound}
-              emptyText="No outbound flights."
-              copied={copied === "out"}
-              onCopy={() => void handleCopy("out", liveResult.outbound)}
-            />
-            <OutputCard
-              title="INBOUND"
-              text={liveResult.inbound}
-              emptyText="No inbound flights."
-              copied={copied === "in"}
-              onCopy={() => void handleCopy("in", liveResult.inbound)}
-            />
-            <OutputCard
-              title="INDIVIDUAL"
-              text={liveResult.individual}
-              emptyText="—"
-              copied={copied === "ind"}
-              onCopy={() => void handleCopy("ind", liveResult.individual)}
-            />
+                {/* ---- self-learning manager ---- */}
+                <LearningPanel
+                  open={learnedOpen}
+                  onToggle={() => setLearnedOpen((v) => !v)}
+                  learningOn={learningOn}
+                  onToggleLearning={toggleLearning}
+                  itineraries={learnedRules.itineraries}
+                  flights={learnedRules.flights}
+                  aircraft={learnedRules.aircraft}
+                  onForgetItinerary={handleForgetItinerary}
+                  onForgetFlight={handleForgetFlight}
+                  onForgetAircraft={handleForgetAircraft}
+                  onClearAll={handleClearLearned}
+                />
+              </div>
+            )}
+            </div>
+          </section>
 
-            {/* ---- self-learning manager ---- */}
-            <LearningPanel
-              open={learnedOpen}
-              onToggle={() => setLearnedOpen((v) => !v)}
-              learningOn={learningOn}
-              onToggleLearning={toggleLearning}
-              itineraries={learnedRules.itineraries}
-              flights={learnedRules.flights}
-              aircraft={learnedRules.aircraft}
-              onForgetItinerary={handleForgetItinerary}
-              onForgetFlight={handleForgetFlight}
-              onForgetAircraft={handleForgetAircraft}
-              onClearAll={handleClearLearned}
-            />
-          </div>
-        ) : (
-          <div className="fade-up mt-6 rounded-2xl border border-dashed border-white/[0.09] bg-white/[0.015] px-6 py-16 text-center">
-            {text.trim() ? (
-              <p className="text-sm text-slate-500">
-                Nothing convertible yet — check the notes above, or adjust the itinerary text.
-              </p>
-            ) : (
+          {/* ============ answers (right pane) ============ */}
+          <section className="flex flex-col gap-4 xl:min-h-0 xl:gap-3">
+            {liveResult && liveResult.hasOutput ? (
               <>
-                <div className="relative mx-auto mb-4 flex h-16 w-16 items-center justify-center">
-                  <span className="absolute inset-0 rounded-2xl bg-honey/10 blur-xl" />
-                  <span className="glass relative flex h-16 w-16 items-center justify-center rounded-2xl text-3xl">
-                    🍯
-                  </span>
+                <div className="flex flex-wrap items-center justify-center gap-2 xl:shrink-0 xl:justify-between">
+                  <h2 className="flex items-center gap-2 text-[11px] font-bold tracking-[0.25em] text-slate-300">
+                    <span className="text-honey/70">❯</span>
+                    SABRE OUTPUT
+                  </h2>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-honey/25 bg-honey/[0.07] px-3 py-1 text-[10.5px] font-bold tracking-[0.12em] text-honey">
+                      <span className="h-1.5 w-1.5 rounded-full bg-honey" />
+                      {liveResult.segments.length} SEGMENT{liveResult.segments.length > 1 ? "S" : ""}
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-slate-300">
+                      <span className="h-1.5 w-1.5 rounded-full bg-sky-400/80" />
+                      {outCount} OUTBOUND
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-slate-300">
+                      <span className="h-1.5 w-1.5 rounded-full bg-violet-400/80" />
+                      {inCount} INBOUND
+                    </span>
+                  </div>
                 </div>
-                <p className="text-sm font-semibold text-slate-300">
-                  Sabre output will appear here automatically
-                </p>
-                <p className="mt-1.5 text-xs text-slate-500">
-                  Paste an itinerary — text or screenshot — no Convert button needed.
-                </p>
-                <div className="mt-5 flex flex-wrap items-center justify-center gap-2 text-[10px] font-semibold tracking-wider text-slate-500">
-                  <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">ITINERARY</span>
-                  <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">OUTBOUND</span>
-                  <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">INBOUND</span>
-                  <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">INDIVIDUAL</span>
+
+                <div className="grid grid-cols-1 gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-2 xl:grid-rows-2 xl:gap-3">
+                  <OutputCard
+                    fill
+                    title="SABRE ITINERARY"
+                    text={liveResult.itinerary}
+                    emptyText="Paste an itinerary to build the main entry."
+                    copied={copied === "itin"}
+                    onCopy={() => void handleCopy("itin", liveResult.itinerary)}
+                  />
+                  <OutputCard
+                    fill
+                    title="OUTBOUND"
+                    text={liveResult.outbound}
+                    emptyText="No outbound flights."
+                    copied={copied === "out"}
+                    onCopy={() => void handleCopy("out", liveResult.outbound)}
+                  />
+                  <OutputCard
+                    fill
+                    title="INBOUND"
+                    text={liveResult.inbound}
+                    emptyText="No inbound flights."
+                    copied={copied === "in"}
+                    onCopy={() => void handleCopy("in", liveResult.inbound)}
+                  />
+                  <OutputCard
+                    fill
+                    title="INDIVIDUAL"
+                    text={liveResult.individual}
+                    emptyText="—"
+                    copied={copied === "ind"}
+                    onCopy={() => void handleCopy("ind", liveResult.individual)}
+                  />
                 </div>
               </>
+            ) : (
+              <div className="fade-up flex flex-1 flex-col items-center justify-center rounded-2xl border border-dashed border-white/[0.09] bg-white/[0.015] px-6 py-16 text-center">
+                {text.trim() ? (
+                  <p className="text-sm text-slate-500">
+                    Nothing convertible yet — check the notes above, or adjust the itinerary text.
+                  </p>
+                ) : (
+                  <>
+                    <div className="relative mx-auto mb-4 flex h-16 w-16 items-center justify-center">
+                      <span className="absolute inset-0 rounded-2xl bg-honey/10 blur-xl" />
+                      <span className="glass relative flex h-16 w-16 items-center justify-center rounded-2xl text-3xl">
+                        🍯
+                      </span>
+                    </div>
+                    <p className="text-sm font-semibold text-slate-300">
+                      Sabre output will appear here automatically
+                    </p>
+                    <p className="mt-1.5 text-xs text-slate-500">
+                      Paste an itinerary on the left — text or screenshot — no Convert button needed.
+                    </p>
+                    <div className="mt-5 flex flex-wrap items-center justify-center gap-2 text-[10px] font-semibold tracking-wider text-slate-500">
+                      <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">ITINERARY</span>
+                      <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">OUTBOUND</span>
+                      <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">INBOUND</span>
+                      <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1">INDIVIDUAL</span>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
-          </div>
-        )}
+          </section>
+        </div>
 
-        <footer className="mt-12 pb-4 text-center">
+        <footer className="mt-12 pb-4 text-center xl:hidden">
           <div className="gold-rule mx-auto mb-4 h-px w-40 opacity-50" />
           <p className="text-[10.5px] tracking-wide text-slate-600">
             El 3asool Converter 🍯 · SABRE / GDS · Made by{" "}
