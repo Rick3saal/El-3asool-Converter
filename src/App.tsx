@@ -239,6 +239,8 @@ function OutputCard({
   copied,
   onCopy,
   fill,
+  compact,
+  className,
 }: {
   title: string;
   text: string;
@@ -247,18 +249,31 @@ function OutputCard({
   onCopy: () => void;
   /** fills its grid cell with an internal scroll area on large screens */
   fill?: boolean;
+  /** hugs its 1–2 line content instead of claiming a whole cell (large screens) */
+  compact?: boolean;
+  /** extra layout classes for the caller (e.g. lg:flex-1) */
+  className?: string;
 }) {
   const has = text.length > 0;
   const lineCount = has ? text.split("\n").filter((l) => l.trim()).length : 0;
+  /** on large screens: own the leftover space (fill) or just the content height (compact) — both scroll inside */
+  const scrollPane = fill || compact;
   return (
     <section
       className={cn(
         "glass glass-hover fade-up group relative overflow-hidden rounded-2xl",
-        fill && "lg:flex lg:min-h-0 lg:flex-col"
+        fill && "lg:flex lg:min-h-0 lg:flex-col",
+        compact && "lg:flex lg:max-h-[22vh] lg:min-h-0 lg:flex-col",
+        className
       )}
     >
       <div className="card-accent absolute inset-x-0 top-0 h-px opacity-70 transition-opacity duration-300 group-hover:opacity-100" />
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-3.5">
+      <header
+        className={cn(
+          "flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-3.5",
+          compact && "lg:px-4 lg:py-2.5"
+        )}
+      >
         <div className="flex items-center gap-2.5">
           <span
             className={cn(
@@ -279,13 +294,21 @@ function OutputCard({
         <pre
           className={cn(
             "sabre-scroll overflow-x-auto whitespace-pre px-5 py-4 font-mono text-[12.5px] leading-[1.8] text-slate-100 selection:bg-honey/30 lg:min-h-0 lg:flex-1 lg:overflow-auto",
-            fill && "lg:text-[11.5px] min-[1800px]:text-[12.5px]"
+            compact && "lg:px-4 lg:py-3 lg:leading-[1.7]",
+            scrollPane && "lg:text-[11.5px] min-[1800px]:text-[12.5px]"
           )}
         >
           {text}
         </pre>
       ) : (
-        <p className="px-5 py-4 text-[12.5px] italic text-slate-500">{emptyText ?? "—"}</p>
+        <p
+          className={cn(
+            "px-5 py-4 text-[12.5px] italic text-slate-500",
+            compact && "lg:px-4 lg:py-3"
+          )}
+        >
+          {emptyText ?? "—"}
+        </p>
       )}
     </section>
   );
@@ -1436,39 +1459,48 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-2 lg:grid-rows-2 lg:gap-3">
+                {/* SABRE ITINERARY stays alone, full width, above the other three.
+                    Below it: OUTBOUND + INBOUND stacked on the left (they are
+                    normally 1–2 lines each, so they hug their content) and
+                    INDIVIDUAL on the right of the same row. */}
+                <div className="flex flex-col gap-4 lg:min-h-0 lg:flex-1 lg:gap-3">
                   <OutputCard
                     fill
+                    className="lg:flex-1"
                     title="SABRE ITINERARY"
                     text={liveResult.itinerary}
                     emptyText="Paste an itinerary to build the main entry."
                     copied={copied === "itin"}
                     onCopy={() => void handleCopy("itin", liveResult.itinerary)}
                   />
-                  <OutputCard
-                    fill
-                    title="OUTBOUND"
-                    text={liveResult.outbound}
-                    emptyText="No outbound flights."
-                    copied={copied === "out"}
-                    onCopy={() => void handleCopy("out", liveResult.outbound)}
-                  />
-                  <OutputCard
-                    fill
-                    title="INBOUND"
-                    text={liveResult.inbound}
-                    emptyText="No inbound flights."
-                    copied={copied === "in"}
-                    onCopy={() => void handleCopy("in", liveResult.inbound)}
-                  />
-                  <OutputCard
-                    fill
-                    title="INDIVIDUAL"
-                    text={liveResult.individual}
-                    emptyText="—"
-                    copied={copied === "ind"}
-                    onCopy={() => void handleCopy("ind", liveResult.individual)}
-                  />
+                  <div className="grid grid-cols-1 gap-4 lg:min-h-0 lg:max-h-[48vh] lg:shrink-0 lg:grid-cols-2 lg:gap-3">
+                    <div className="flex flex-col gap-4 lg:min-h-0 lg:gap-3">
+                      <OutputCard
+                        compact
+                        title="OUTBOUND"
+                        text={liveResult.outbound}
+                        emptyText="No outbound flights."
+                        copied={copied === "out"}
+                        onCopy={() => void handleCopy("out", liveResult.outbound)}
+                      />
+                      <OutputCard
+                        compact
+                        title="INBOUND"
+                        text={liveResult.inbound}
+                        emptyText="No inbound flights."
+                        copied={copied === "in"}
+                        onCopy={() => void handleCopy("in", liveResult.inbound)}
+                      />
+                    </div>
+                    <OutputCard
+                      fill
+                      title="INDIVIDUAL"
+                      text={liveResult.individual}
+                      emptyText="—"
+                      copied={copied === "ind"}
+                      onCopy={() => void handleCopy("ind", liveResult.individual)}
+                    />
+                  </div>
                 </div>
               </>
             ) : (
