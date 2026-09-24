@@ -138,6 +138,69 @@ body {
 }
 
 /* ------------------------------------------------------------------ */
+/* Workspace typography — in-app text sizing (no browser zoom needed)   */
+/*                                                                     */
+/* The split workspace always fits the viewport, so legibility is a    */
+/* text-size decision instead of a zoom decision. These variables are   */
+/* driven by data-density on the app shell:                             */
+/*   compact (90%) · normal (100%, default) · roomy (115%) · xl (135%)  */
+/* Only the human-readable text scales — the box grid stays put, which  */
+/* is what keeps "everything visible" true at every step.              */
+/* ------------------------------------------------------------------ */
+
+.app-shell {
+  --fs-out: 12.8px;
+  --lh-out: 1.72;
+  --fs-in: 12.8px;
+  --lh-in: 1.62;
+}
+
+.app-shell[data-density="compact"] {
+  --fs-out: 11.4px;
+  --lh-out: 1.58;
+  --fs-in: 11.6px;
+  --lh-in: 1.55;
+}
+
+.app-shell[data-density="roomy"] {
+  --fs-out: 14.6px;
+  --lh-out: 1.8;
+  --fs-in: 14.2px;
+  --lh-in: 1.68;
+}
+
+.app-shell[data-density="xl"] {
+  --fs-out: 17px;
+  --lh-out: 1.85;
+  --fs-in: 16.4px;
+  --lh-in: 1.72;
+}
+
+/* Sabre output text: size comes from the density setting */
+.out-pre {
+  font-size: var(--fs-out);
+  line-height: var(--lh-out);
+  tab-size: 4;
+}
+
+/* Wrapping keeps every character on screen instead of behind a sideways
+   scrollbar. Turning it off restores the classic one-line-per-entry look. */
+.out-pre-wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.out-pre-nowrap {
+  white-space: pre;
+}
+
+/* Itinerary textarea: same idea, slightly tighter leading */
+.in-textarea {
+  font-size: var(--fs-in);
+  line-height: var(--lh-in);
+}
+
+/* ------------------------------------------------------------------ */
 /* Motion                                                              */
 /* ------------------------------------------------------------------ */
 

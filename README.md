@@ -102,6 +102,30 @@ intentionally listed under `dependencies`, not `devDependencies`. Vercel builds 
 `NODE_ENV=production`, and npm then omits dev dependencies by default — which is what caused the
 earlier `vite: command not found` failures. Please don't "tidy" them away.
 
+## Workspace layout — the whole result on one screen
+
+The UI is built around one goal: **the itinerary you paste and the Sabre result are readable at
+100 % browser zoom, without scrolling the page.** On a screen 1024 px or wider the app is a split
+workspace; below that it stacks and scrolls as before.
+
+| Area | What it holds |
+|---|---|
+| Top bar | brand (click it for the full title screen), the Arabic remembrance, `A− / A+` text size, `▤ Split` / `☰ Classic`, `⏎ Wrap`, fullscreen |
+| Left pane | the source: paste / drop textarea, screenshot preview, cabin prompt, notes, AI Assist panel — plus the `✏️ EDIT FLIGHTS` tab, which shows the per-flight editor in place of the textarea |
+| Right pane | the result: `All` shows itinerary, outbound, inbound and individual together; the other tabs show one section full size. Each card has `Copy`, `⤢` (open it on its own) and the toolbar has `⧉ Copy all 4` |
+| Bottom strip | self-learning rules, opening upwards so it never pushes the workspace around |
+
+- **Text size instead of browser zoom** — `A− / A+` steps 90 % · 100 % · 115 % · 135 % and is
+  remembered per browser. Only text scales; the boxes stay put, so everything stays on screen.
+- **Line wrapping** is on by default (`⏎ Wrap`) so no entry hides behind a sideways scrollbar; turn
+  it off for the classic one-entry-per-line look.
+- **`☰ Classic`** brings back the original single scrolling column, with the review & edit panel
+  inline above the output — nothing was removed from it.
+- **`⤢` (top bar)** requests fullscreen; if the browser blocks it (framed previews often do) it
+  tells you to use <kbd>F11</kbd> instead.
+- Layout preferences live in local storage under `el3asool.view.v2`. They are visual only and never
+  touch AI settings, learned rules or the converted output.
+
 ## Environment variables
 
 | Name | Where | Purpose |
