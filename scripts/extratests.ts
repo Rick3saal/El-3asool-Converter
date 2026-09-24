@@ -513,9 +513,7 @@ Airbus A220-300 | Business Class (P)`;
     "full itinerary matches expected",
     r.itinerary ===
       `1 LX 23 9NOV JFK GVA 735P 920A¥1 333 7.45 0 N  CABIN-BUSINESS
-*JFK-GVA OPERATED BY SWISS
 2 LX 354 10NOV GVA LHR 1250P 140P 223 1.50 0 N  CABIN-BUSINESS
-*GVA-LHR OPERATED BY SWISS
 
 <--additional-->
 1 LX 23P 9NOV
@@ -525,7 +523,7 @@ Airbus A220-300 | Business Class (P)`;
   check("glued 'to9:20' arrival parsed with +1", r.itinerary.includes("735P 920A¥1"), r.itinerary);
   check("A330-300 -> 333", r.itinerary.includes("333 7.45"));
   check("A220-300 -> 223", r.itinerary.includes("223 1.50"));
-  check("explicit operated-by kept (same carrier)", r.itinerary.includes("*JFK-GVA OPERATED BY SWISS") && r.itinerary.includes("*GVA-LHR OPERATED BY SWISS"));
+  check("operated-by omitted when same carrier (LX + Swiss)", !r.itinerary.includes("OPERATED BY"));
   check("outbound chain", r.outbound === "0LX23P9NOVJFKGVANN1§0LX354P10NOVGVALHRNN1", r.outbound);
   check("no inbound (one-way)", r.inbound === "", r.inbound);
 }
@@ -550,9 +548,7 @@ Airbus A220-300 | Business Class (P)`;
     "AI flights produce identical Sabre output",
     r.itinerary ===
       `1 LX 23 9NOV JFK GVA 735P 920A¥1 333 7.45 0 N  CABIN-BUSINESS
-*JFK-GVA OPERATED BY SWISS
 2 LX 354 10NOV GVA LHR 1250P 140P 223 1.50 0 N  CABIN-BUSINESS
-*GVA-LHR OPERATED BY SWISS
 
 <--additional-->
 1 LX 23P 9NOV
@@ -629,7 +625,7 @@ OPERATED BY: SINGAPORE AIRLINES`;
 
   // 2. System learns it
   const entry = learnItinerary(novelText, aiExtracted);
-  check("itinerary learned and summary built", entry.summary.includes("LX 8820") && entry.summary.includes("SQ 215"));
+  check("itinerary learned and summary built", Boolean(entry?.summary.includes("LX 8820") && entry?.summary.includes("SQ 215")));
 
   // 3. Convert without AI (AI off / closed)
   const convertedDirect = convert(novelText);
@@ -804,7 +800,7 @@ Economy (B)
 Layover in ORD (3h 23m)`;
   const rd = convert(noDur);
   check("no own duration: layover 3h23m never borrowed", !rd.itinerary.includes("3.23"), rd.itinerary);
-  check("no own duration: warning correctly raised", rd.issues.some((i) => i.text.includes("duration not stated")), JSON.stringify(rd.issues));
+  check("no own duration: duration warning removed per mandate", !rd.issues.some((i) => i.text.includes("duration not stated")));
 
   // E. ALB now resolves a confident timezone estimate
   const { estimateElapsed } = await import("../src/lib/airports");

@@ -4,6 +4,7 @@ import { assembleFromSegments, convertFlights, convertToSabre } from "./lib/conv
 import type { Cabin, ConverterResult, Issue, Segment } from "./lib/types";
 import { ocrImage } from "./lib/ocr";
 import {
+  AiError,
   DEFAULT_AI_SETTINGS,
   defaultModelFor,
   extractFlightsWithAI,
@@ -321,7 +322,7 @@ function OutputCard({
       )}
     >
       <div className="card-accent absolute inset-x-0 top-0 h-px opacity-70 transition-opacity duration-300 group-hover:opacity-100" />
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.07] px-3.5 py-2">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-x-2 gap-y-1.5 border-b border-white/[0.07] px-3.5 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <span
             className={cn(
@@ -639,6 +640,8 @@ export default function App() {
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
   const [aiNote, setAiNote] = useState("");
+  /** transient "busy / retrying…" status while backoff + model fallback run */
+  const [aiRetry, setAiRetry] = useState("");
   const aiAutoRef = useRef<string>("");
 
   const cacheRef = useRef(new Map<string, ConverterResult>());
@@ -775,8 +778,15 @@ export default function App() {
       setAiBusy(true);
       setAiError("");
       setAiNote("");
+      setAiRetry("");
       try {
-        const flights = await extractFlightsWithAI(rawText, ai);
+        // Transient provider failures (503 UNAVAILABLE, 429, network drops) are
+        // retried with exponential backoff and then across the fallback models.
+        // The user sees a calm "busy / retrying" note instead of a raw error.
+        const flights = await extractFlightsWithAI(rawText, ai, {
+          onAttempt: (info) => setAiRetry(info.message),
+        });
+        setAiRetry("");
         const out = convertFlights(flights, fallbackCabin);
         setResult(out);
 
@@ -792,7 +802,18 @@ export default function App() {
           setAiNote(`AI read ${flights.length} flight${flights.length > 1 ? "s" : ""}. Review the output below.`);
         }
       } catch (e) {
-        setAiError(e instanceof Error ? e.message : "AI extraction failed.");
+        setAiRetry("");
+        // A temporarily overloaded model must never look like a converter or
+        // itinerary failure, and never corrupts the local parser's result.
+        if (e instanceof AiError && e.transient) {
+          setAiError(
+            e.status === 503 || e.status === undefined
+              ? "🧭 AI Assist is temporarily unavailable (the model is overloaded). This is not a problem with your itinerary or the converter — the local result below is unaffected. Try again in a moment."
+              : `🧭 AI Assist is temporarily unavailable (${e.status}). The local result below is unaffected — try again shortly.`
+          );
+        } else {
+          setAiError(e instanceof Error ? e.message : "AI extraction failed.");
+        }
       } finally {
         setAiBusy(false);
       }
@@ -1308,6 +1329,7 @@ export default function App() {
           {pasteHint && <p className="mt-2 text-[11.5px] text-rose-300/90">{pasteHint}</p>}
 
           {aiNote && <p className="mt-2 text-[11.5px] text-emerald-300/90">{aiNote}</p>}
+          {aiRetry && <p className="mt-2 text-[11.5px] text-amber-300/90">{aiRetry}</p>}
           {aiError && <p className="mt-2 text-[11.5px] text-rose-300/90">{aiError}</p>}
 
           {/* ---- parse notes: warnings, errors and the learned-memory hint ---- */}
@@ -1372,6 +1394,19 @@ export default function App() {
                     autoComplete="off"
                     onChange={(e) => updateAi({ apiKey: e.target.value })}
                   />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className={labelCls}>Fallback models (optional)</label>
+                  <input
+                    className={inputCls}
+                    value={ai.fallbackModels ?? ""}
+                    placeholder="comma separated — tried automatically if the main model is overloaded"
+                    onChange={(e) => updateAi({ fallbackModels: e.target.value })}
+                  />
+                  <p className="mt-1 text-[10.5px] text-amber-200/50">
+                    On a busy model (HTTP 503) the request is retried with backoff, then these models are tried
+                    in order before AI Assist reports itself temporarily unavailable.
+                  </p>
                 </div>
                 {ai.provider === "custom" && (
                   <div className="sm:col-span-2">
@@ -1675,7 +1710,6 @@ export default function App() {
             )}
           </div>
         )}
-
           </section>
         </div>
 

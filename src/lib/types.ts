@@ -3,9 +3,10 @@
 export type Cabin = "FIRST" | "BUSINESS" | "PREMIUM" | "ECONOMY";
 
 export interface ParsedDate {
-  day: number; // 1-31, never zero-padded on output
+  day: number; // 1-31
   month: number; // 1-12
   year?: number;
+  raw?: string;
 }
 
 export type Direction = "OUT" | "IN";
@@ -27,6 +28,8 @@ export interface RawFlight {
   cabin?: Cabin;
   /** explicit booking class from source, e.g. "D" */
   bookingClass?: string;
+  /** whether the flight had a "*" codeshare flag in the source */
+  hasStarFlag?: boolean;
   /** Sabre equipment code, e.g. 789 */
   equip?: string;
   /** raw aircraft text as printed in the source (for self-learning) */
@@ -44,6 +47,10 @@ export interface RawFlight {
   /** when a same-number pair was kept separate because of a layover */
   layover?: boolean;
   direction?: Direction;
+  /** Optional direction hint populated by the parser when the source text has
+   *  explicit section headings ("X to Y on <date>", "Return", ...). Used by
+   *  splitDirections as the primary split signal when present. */
+  directionHint?: Direction;
 }
 
 /** A fully resolved, sellable Sabre segment */
@@ -63,6 +70,7 @@ export interface Segment {
   elapsed: number;
   cabin: Cabin;
   bookingClass: string;
+  hasStarFlag?: boolean;
   operatedBy?: string;
   direction: Direction;
 }
@@ -74,6 +82,12 @@ export interface Issue {
   text: string;
 }
 
+export interface UnknownClassQuestion {
+  airline: string;
+  classLetter: string;
+  flightLabel: string;
+}
+
 export interface ConverterResult {
   itinerary: string; // main itinerary + <--additional-->
   outbound: string; // NN1 chains
@@ -82,5 +96,8 @@ export interface ConverterResult {
   segments: Segment[];
   issues: Issue[];
   hasOutput: boolean;
-  missingCabinFlights: string[]; // flights needing a cabin choice
+  missingCabinFlights: string[]; // flights with no class letter and no cabin
+  unknownClassQuestions: UnknownClassQuestion[]; // flights with a class letter not in confirmed/learned table
+  failedOperatorFlights: string[]; // flights with "*" flag where operator lookup failed
+  failedEquipmentFlights: string[]; // flights where equipment lookup failed ("---")
 }

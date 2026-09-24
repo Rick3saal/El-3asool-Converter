@@ -14,8 +14,10 @@
     "typecheck": "tsc --noEmit",
     "selftest": "tsx scripts/selftest.ts",
     "selftest:extra": "tsx scripts/extratests.ts",
+    "selftest:newreq": "tsx scripts/newreqtests.ts",
+    "selftest:stylec": "tsx scripts/styleCtests.ts",
     "cathaycheck": "tsx scripts/cathaycheck.ts",
-    "check": "npm run typecheck && npm run selftest && npm run selftest:extra && npm run cathaycheck && npm run build",
+    "check": "npm run typecheck && npm run selftest && npm run selftest:extra && npm run selftest:newreq && npm run cathaycheck && npm run selftest:stylec && npm run build",
     "deploy:vercel": "npx --yes vercel@latest build --prod && npx --yes vercel@latest deploy --prebuilt --prod"
   },
   "dependencies": {
