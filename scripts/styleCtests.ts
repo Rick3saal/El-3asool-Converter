@@ -405,6 +405,7 @@ Business`;
     model: "gemini-2.5-pro",
     baseUrl: "",
     fallbackModels: "gemini-2.0-flash",
+    searchOnline: false, // not exercised by these retry/model-chain tests
   };
   check("model chain starts with the configured model", modelChain(settings)[0] === "gemini-2.5-pro", modelChain(settings).join(","));
   check("model chain includes the user fallback", modelChain(settings).includes("gemini-2.0-flash"));

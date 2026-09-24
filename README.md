@@ -135,6 +135,27 @@ workspace; below that it stacks and scrolls as before.
 Copy `.env.example` to `.env` for local overrides. No other variables exist — AI provider keys are
 typed into the app and stored only in that browser's local storage, never in the deployment.
 
+## Online aircraft & cabin lookup (AI Assist, opt-in)
+
+When a segment's equipment still shows `---` because the itinerary states no aircraft — or a bare
+booking-class letter (e.g. `W`) has no confirmed/learned cabin — you can let AI Assist fill both in:
+enable **AI Assist** and the **🌐 Look up missing aircraft & cabins online** toggle. With a Gemini
+key the app asks the model in ONE call — using **Google Search grounding**, i.e. a real online check
+of the schedule/aircraft for that flight on that date (or of the airline's own published fare chart
+for the class letter) — for the operating type and the cabin. Aircraft is mapped to the Sabre
+equipment code through the same mapper the local parser uses (airline-specific filings are honored,
+e.g. Emirates files the 787-10 as `781`); a found cabin keeps the class letter exactly as printed.
+Both are memorized by self-learning (aircraft via flight memory, class letters via the learned
+cabin table) so the next conversion needs no AI call. Note: search-grounded responses are billed per
+search on your own key; with OpenAI-compatible providers the lookup uses the model's own knowledge
+instead (no live search). The lookup makes one attempt per itinerary and never touches segments
+already resolved by the local parser, the confirmed/learned cabin tables, the known-flight tables,
+or learned corrections.
+
+The default Gemini model is `gemini-3.6-flash` (1M-token context); the Model field suggests other
+current Flash models. When a model is overloaded (HTTP 503/429) AI Assist retries with backoff and
+across the fallback models before reporting itself temporarily unavailable.
+
 ## Browser requirements on the live site
 
 - **HTTPS is required** for Clipboard API access (paste-to-OCR, copy buttons). Vercel provides it.
