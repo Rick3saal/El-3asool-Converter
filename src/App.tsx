@@ -16,6 +16,7 @@ import {
   forgetAircraft,
   forgetFlight,
   forgetItinerary,
+  assessExtraction,
   isLearningEnabled,
   learnAircraft,
   learnFlight,
@@ -449,13 +450,35 @@ export default function App() {
         const out = convertFlights(flights, fallbackCabin);
         setResult(out);
 
-        // Auto-learn when learning is enabled so the user never needs AI again for this flight!
-        if (learningOn) {
+        // Auto-learn ONLY when the extraction is actually complete — we never
+        // memorise an itinerary the AI could not read properly.
+        const quality = assessExtraction(flights, out.issues);
+        if (learningOn && quality.ok) {
           learnItinerary(rawText, flights);
           out.segments.forEach((seg) => learnFlight(seg));
           setLearnedVersion((v) => v + 1);
           setAiNote(
             `🧠 AI read ${flights.length} flight${flights.length > 1 ? "s" : ""} and saved to memory! Future conversions of this itinerary will work automatically without AI.`
+          );
+        } else if (learningOn) {
+          // Partial result: keep the output on screen, but do not save a bad itinerary.
+          const goodKeys = new Set(
+            quality.goodFlights.map((f) => `${f.airline}|${String(parseInt(f.number, 10))}`)
+          );
+          let savedFlights = 0;
+          out.segments.forEach((seg) => {
+            if (goodKeys.has(`${seg.airline}|${String(parseInt(seg.num, 10))}`)) {
+              learnFlight(seg);
+              savedFlights++;
+            }
+          });
+          if (savedFlights > 0) setLearnedVersion((v) => v + 1);
+          const why = quality.reasons.slice(0, 3).join(" • ");
+          setAiNote(
+            `⚠️ AI read ${flights.length} flight${flights.length === 1 ? "" : "s"}, but the result is incomplete — nothing was saved as a learned itinerary.` +
+              (savedFlights > 0 ? ` (${savedFlights} complete flight${savedFlights === 1 ? "" : "s"} kept in the flight knowledge base.)` : "") +
+              (why ? ` Reason: ${why}.` : "") +
+              " Fix the fields below — your edits are learned and will be remembered."
           );
         } else {
           setAiNote(`AI read ${flights.length} flight${flights.length > 1 ? "s" : ""}. Review the output below.`);

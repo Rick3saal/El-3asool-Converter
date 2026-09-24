@@ -24,7 +24,7 @@
  * Journey-specific fields (date, departure time, arrival time) are adapted
  * to each trip instance.
  */
-import type { Cabin, Direction, RawFlight, Segment } from "./types";
+import type { Cabin, Direction, Issue, RawFlight, Segment } from "./types";
 
 export interface FlightCorrection {
   airline: string;
@@ -350,6 +350,74 @@ function buildItinerarySummary(flights: RawFlight[]): string {
   return flights
     .map((f) => `${f.airline} ${f.number}${f.origin && f.dest ? ` (${f.origin} → ${f.dest})` : ""}`)
     .join(", ");
+}
+
+/* ------------------------------------------------------------------ */
+/* Extraction quality gate — never memorise incomplete AI output.      */
+/* ------------------------------------------------------------------ */
+
+export interface FlightQuality {
+  index: number;
+  label: string;
+  missing: string[];
+  ok: boolean;
+}
+
+export interface ExtractionQuality {
+  ok: boolean;
+  flights: FlightQuality[];
+  /** flights that are safe to memorise */
+  goodFlights: RawFlight[];
+  /** human readable reasons why the extraction is not trustworthy */
+  reasons: string[];
+}
+
+/** Which fields must be present before a flight may be written to memory. */
+function missingFieldsOf(f: RawFlight): string[] {
+  const missing: string[] = [];
+  if (!f.airline || !/^[A-Z0-9]{2,3}$/i.test(f.airline)) missing.push("airline");
+  if (!f.number || !/^\d{1,4}$/.test(String(f.number))) missing.push("flight number");
+  if (!f.origin || !/^[A-Z]{3}$/i.test(f.origin)) missing.push("origin");
+  if (!f.dest || !/^[A-Z]{3}$/i.test(f.dest)) missing.push("destination");
+  if (f.origin && f.dest && f.origin.toUpperCase() === f.dest.toUpperCase()) missing.push("route (origin = destination)");
+  if (!f.date || !f.date.day || !f.date.month) missing.push("date");
+  if (typeof f.dep !== "number" || !Number.isFinite(f.dep)) missing.push("departure time");
+  if (typeof f.arr !== "number" || !Number.isFinite(f.arr)) missing.push("arrival time");
+  return missing;
+}
+
+/**
+ * Judge an AI extraction before anything is saved.
+ * Only flights with every identity/journey field present are memorised, and the
+ * full itinerary is only memorised when *all* flights pass and the converter
+ * reported no errors.
+ */
+export function assessExtraction(flights: RawFlight[], issues: Issue[] = []): ExtractionQuality {
+  const reasons: string[] = [];
+  const list: FlightQuality[] = (flights || []).map((f, i) => {
+    const missing = missingFieldsOf(f);
+    return {
+      index: i,
+      label: `${f.airline || "??"} ${f.number || "???"}`.trim(),
+      missing,
+      ok: missing.length === 0,
+    };
+  });
+
+  if (!flights || flights.length === 0) reasons.push("AI returned no flights");
+  for (const q of list) {
+    if (!q.ok) reasons.push(`${q.label}: missing ${q.missing.join(", ")}`);
+  }
+  const errors = (issues || []).filter((i) => i.level === "error");
+  for (const e of errors) reasons.push(e.text);
+
+  const goodFlights = (flights || []).filter((_, i) => list[i]?.ok);
+  return {
+    ok: reasons.length === 0 && goodFlights.length > 0,
+    flights: list,
+    goodFlights,
+    reasons,
+  };
 }
 
 /**
