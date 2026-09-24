@@ -63,6 +63,13 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), tailwindcss(), sharingMetaUrls(siteUrl), viteSingleFile()],
+    // Dev server only (never part of a build): listen on every interface and
+    // accept proxied hostnames, so `npm run dev` also works from a container,
+    // a LAN address or a cloud preview URL instead of only from localhost.
+    server: {
+      host: true,
+      allowedHosts: true,
+    },
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "src"),
