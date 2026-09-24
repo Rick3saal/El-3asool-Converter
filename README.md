@@ -135,6 +135,20 @@ workspace; below that it stacks and scrolls as before.
 Copy `.env.example` to `.env` for local overrides. No other variables exist — AI provider keys are
 typed into the app and stored only in that browser's local storage, never in the deployment.
 
+## Online aircraft lookup (AI Assist, opt-in)
+
+When a segment's equipment still shows `---` because the itinerary states no aircraft, you can let
+AI Assist fill it in: enable **AI Assist** and the **🌐 Look up missing aircraft online** toggle.
+With a Gemini key the app asks the model — using **Google Search grounding**, i.e. a real online
+check of the schedule/aircraft for that flight on that date — for the operating type, and maps it
+to the Sabre equipment code through the same mapper the local parser uses (airline-specific filings
+are honored, e.g. Emirates files the 787-10 as `781`). Found aircraft are memorized by self-learning
+so the next conversion of the same flight needs no AI call. Note: search-grounded responses are
+billed per search on your own key; with OpenAI-compatible providers the lookup uses the model's own
+knowledge instead (no live search). The lookup makes one attempt per itinerary and never touches
+segments whose equipment was already resolved by the local parser, the known-flight tables, or
+learned corrections.
+
 ## Browser requirements on the live site
 
 - **HTTPS is required** for Clipboard API access (paste-to-OCR, copy buttons). Vercel provides it.

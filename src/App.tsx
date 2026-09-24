@@ -8,8 +8,11 @@ import {
   DEFAULT_AI_SETTINGS,
   defaultModelFor,
   extractFlightsWithAI,
+  GEMINI_MODEL_SUGGESTIONS,
+  lookupFlightsOnline,
   type AiProvider,
   type AiSettings,
+  type OnlineLookupItem,
 } from "./lib/ai";
 import {
   clearLearned,
@@ -675,6 +678,96 @@ export default function App() {
   useEffect(() => {
     setEdited(result ? result.segments.map((s) => ({ ...s })) : null);
   }, [result]);
+
+  /* ---- online equipment lookup (restored option) ----
+   * When AI Assist is on (with a key) and the "look up missing aircraft
+   * online" switch is enabled, every segment whose equipment is still "---"
+   * — i.e. the itinerary states no aircraft — is sent to the AI in ONE call
+   * (Gemini + Google Search grounding = a real online check of the schedule
+   * /aircraft for that flight on that date). The found aircraft goes through
+   * the SAME equipment mapper the local parser uses, and the result is
+   * re-assembled through the SAME formatter/validator.
+   * One attempt per input; found aircraft are memorized when learning is on,
+   * so the next conversion of the same flight needs no AI call. */
+  const [enrichBusy, setEnrichBusy] = useState(false);
+  const enrichedKeyRef = useRef<string>("");
+  useEffect(() => {
+    if (!result || !result.hasOutput) return;
+    const missing = result.segments.filter((s) => s.equip === "---");
+    if (missing.length === 0) return;
+    if (!ai.enabled || !ai.apiKey || !ai.searchOnline) return;
+    const key = `${text}::${fallbackCabin ?? "·"}::${ai.model}`;
+    if (enrichedKeyRef.current === key) return; // already attempted for this input
+    let cancelled = false;
+    setEnrichBusy(true);
+    (async () => {
+      try {
+        const items: OnlineLookupItem[] = missing.map((s) => ({
+          airline: s.airline,
+          number: s.num,
+          origin: s.origin,
+          dest: s.dest,
+          day: s.date.day,
+          month: s.date.month,
+          needAircraft: true,
+        }));
+        const outcome = await lookupFlightsOnline(items, ai);
+        if (cancelled) return;
+
+        const src = outcome.grounded
+          ? "checked online"
+          : outcome.usedFallback
+            ? "from model knowledge (quota fallback — ran without live search)"
+            : "from model knowledge";
+
+        // Patch segments whose equipment is still "---" with the found codes.
+        const notes: string[] = [];
+        const found: Segment[] = [];
+        const newSegs = result.segments.map((s) => {
+          if (s.equip !== "---") return s;
+          const r = outcome.aircraft.get(`${s.airline}${parseInt(s.num, 10)}`);
+          if (r?.equip) {
+            const next = { ...s, equip: r.equip, equipRaw: r.aircraft ?? s.equipRaw };
+            found.push(next);
+            notes.push(`${s.airline} ${s.num} = ${next.equipRaw ?? next.equip} (${next.equip})`);
+            return next;
+          }
+          return s;
+        });
+        if (found.length === 0) return; // nothing found — keep "---" and its warning
+
+        const foundKeys = new Set(found.map((s) => `${s.airline} ${s.num}`));
+        const keptIssues = result.issues.filter(
+          (i) =>
+            !(i.text.includes("equipment not found") && [...foundKeys].some((k) => i.text.includes(k)))
+        );
+        const nextFailedEquipment = result.failedEquipmentFlights.filter(
+          (l) => ![...foundKeys].some((k) => l.includes(k))
+        );
+        const next = assembleFromSegments(
+          newSegs,
+          [{ level: "info" as const, text: `🌐 Aircraft ${src}: ${notes.join(" · ")}.` }, ...keptIssues],
+          result.missingCabinFlights,
+          result.unknownClassQuestions,
+          result.failedOperatorFlights,
+          nextFailedEquipment
+        );
+        enrichedKeyRef.current = key;
+        setResult(next);
+        if (learningOn) {
+          found.forEach((s) => learnFlight(s));
+          setLearnedVersion((v) => v + 1);
+        }
+      } catch (e) {
+        if (!cancelled) setAiNote(`Online aircraft lookup failed: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        if (!cancelled) setEnrichBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [result, ai, text, fallbackCabin, learningOn]);
 
   /* ---- live result: edited segments re-enter the SAME formatter/validator ---- */
   const liveResult: ConverterResult | null = useMemo(() => {
@@ -1381,8 +1474,16 @@ export default function App() {
                     className={inputCls}
                     value={ai.model}
                     placeholder={defaultModelFor(ai.provider)}
+                    list={ai.provider === "gemini" ? "ai-model-suggestions" : undefined}
                     onChange={(e) => updateAi({ model: e.target.value })}
                   />
+                  {ai.provider === "gemini" && (
+                    <datalist id="ai-model-suggestions">
+                      {GEMINI_MODEL_SUGGESTIONS.map((m) => (
+                        <option key={m} value={m} />
+                      ))}
+                    </datalist>
+                  )}
                 </div>
                 <div className="sm:col-span-2">
                   <label className={labelCls}>API key</label>
@@ -1444,6 +1545,35 @@ export default function App() {
                   />
                 </button>
               </div>
+
+              {ai.enabled && (
+                <div className="mt-3 flex items-center justify-between border-t border-honey/15 pt-3">
+                  <span className="text-[11.5px] text-amber-200/80">
+                    🌐 Look up missing aircraft online
+                    <span className="ml-1.5 text-[10.5px] text-amber-200/50">
+                      (Gemini + Google Search — fills the “---” equipment when the itinerary states no
+                      aircraft, small per-search cost on your key)
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={ai.searchOnline}
+                    onClick={() => updateAi({ searchOnline: !ai.searchOnline })}
+                    className={cn(
+                      "relative h-6 w-11 shrink-0 rounded-full transition-colors",
+                      ai.searchOnline ? "bg-honey" : "bg-slate-700"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all",
+                        ai.searchOnline ? "left-[22px]" : "left-0.5"
+                      )}
+                    />
+                  </button>
+                </div>
+              )}
             </div>
             )}
               </div>
@@ -1583,6 +1713,14 @@ export default function App() {
                 </div>
               )}
             </div>
+
+            {/* ---- online equipment lookup in progress ---- */}
+            {enrichBusy && (
+              <div className="mt-2 flex items-center gap-2 rounded-xl border border-honey/25 bg-honey/[0.05] px-4 py-3 text-[12.5px] text-amber-100/90">
+                <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-honey/30 border-t-honey" />
+                Looking up missing aircraft online…
+              </div>
+            )}
 
             {liveResult && liveResult.hasOutput ? (
               <div
