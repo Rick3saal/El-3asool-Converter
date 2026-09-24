@@ -91,6 +91,9 @@ Departure 4:45 PM · Arrival 7:57 PM
 First (I)
 Duration: 2 hr 12 min`;
 
+/** اللَّهُمَّ صَلِّ وَسَلِّمْ عَلَى نَبِيِّنَا مُحَمَّدٍ — kept exactly as written */
+const SALAT = "اللَّهُمَّ صَلِّ وَسَلِّمْ عَلَى نَبِيِّنَا مُحَمَّدٍ";
+
 type OcrStatus = "idle" | "processing" | "done" | "error";
 
 interface ImageState {
@@ -179,6 +182,78 @@ function looksLikeUrlOnly(text: string): boolean {
 }
 
 /* ------------------------------------------------------------------ */
+/* workspace preferences (layout, text size, wrapping)                 */
+/*                                                                     */
+/* Purely visual and kept in their own key, so nothing else in local    */
+/* storage (AI settings, learned rules) is touched.                     */
+/* ------------------------------------------------------------------ */
+
+const VIEW_LS_KEY = "el3asool.view.v2";
+
+type ViewMode = "split" | "stack";
+type PaneTab = "source" | "edit";
+type OutTab = "all" | "itinerary" | "outbound" | "inbound" | "individual";
+
+const DENSITY_STEPS = [
+  { id: "compact", label: "90%", title: "Compact text — fits the most at once" },
+  { id: "normal", label: "100%", title: "Normal text" },
+  { id: "roomy", label: "115%", title: "Large text" },
+  { id: "xl", label: "135%", title: "Extra large text" },
+] as const;
+type DensityId = (typeof DENSITY_STEPS)[number]["id"];
+
+const OUT_TABS: Array<{ id: OutTab; label: string; hint: string }> = [
+  { id: "all", label: "All", hint: "Everything at once — itinerary, chains and sell entries" },
+  { id: "itinerary", label: "Itinerary", hint: "The main entry (with its <--additional--> block)" },
+  { id: "outbound", label: "Outbound", hint: "Outbound NN1 chain" },
+  { id: "inbound", label: "Inbound", hint: "Inbound NN1 chain" },
+  { id: "individual", label: "Individual", hint: "One GK1 sell entry per flight" },
+];
+
+interface ViewPrefs {
+  mode: ViewMode;
+  density: DensityId;
+  wrap: boolean;
+  hero: boolean;
+  tab: OutTab;
+}
+
+const DEFAULT_VIEW: ViewPrefs = {
+  mode: "split",
+  density: "normal",
+  wrap: true,
+  hero: false,
+  tab: "all",
+};
+
+function loadViewPrefs(): ViewPrefs {
+  try {
+    const raw = localStorage.getItem(VIEW_LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<ViewPrefs>;
+      const merged = { ...DEFAULT_VIEW, ...parsed };
+      if (!DENSITY_STEPS.some((d) => d.id === merged.density)) merged.density = DEFAULT_VIEW.density;
+      if (merged.mode !== "split" && merged.mode !== "stack") merged.mode = DEFAULT_VIEW.mode;
+      // the section tab is deliberately NOT remembered: every visit opens on
+      // "All", so the whole result is never hidden behind a forgotten tab.
+      merged.tab = DEFAULT_VIEW.tab;
+      return merged;
+    }
+  } catch {
+    /* ignore */
+  }
+  return { ...DEFAULT_VIEW };
+}
+
+function saveViewPrefs(p: ViewPrefs): void {
+  try {
+    localStorage.setItem(VIEW_LS_KEY, JSON.stringify(p));
+  } catch {
+    /* ignore */
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* small components                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -220,43 +295,285 @@ function OutputCard({
   emptyText,
   copied,
   onCopy,
+  className,
+  wrap,
+  onFocus,
+  hint,
+  titleAttr,
 }: {
   title: string;
   text: string;
   emptyText?: string;
   copied: boolean;
   onCopy: () => void;
+  className?: string;
+  wrap: boolean;
+  onFocus?: () => void;
+  hint?: string;
+  titleAttr?: string;
 }) {
   const has = text.length > 0;
   const lineCount = has ? text.split("\n").filter((l) => l.trim()).length : 0;
   return (
-    <section className="glass glass-hover fade-up group relative overflow-hidden rounded-2xl">
+    <section
+      className={cn(
+        "glass glass-hover fade-up group relative flex min-w-0 flex-col overflow-hidden rounded-2xl",
+        className
+      )}
+    >
       <div className="card-accent absolute inset-x-0 top-0 h-px opacity-70 transition-opacity duration-300 group-hover:opacity-100" />
-      <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-white/[0.07] px-5 py-3.5">
-        <div className="flex items-center gap-2.5">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-x-2 gap-y-1.5 border-b border-white/[0.07] px-3.5 py-2">
+        <div className="flex min-w-0 items-center gap-2">
           <span
             className={cn(
-              "h-1.5 w-1.5 rounded-full transition-colors",
+              "h-1.5 w-1.5 shrink-0 rounded-full transition-colors",
               has ? "bg-honey shadow-[0_0_10px_rgba(245,197,24,0.8)]" : "bg-slate-600"
             )}
           />
-          <h3 className="text-[11px] font-bold tracking-[0.22em] text-slate-200">{title}</h3>
+          <h3 className="truncate text-[11px] font-bold tracking-[0.2em] text-slate-200" title={titleAttr ?? hint}>
+            {title}
+          </h3>
           {has && (
-            <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[9.5px] font-semibold tabular-nums text-slate-400">
+            <span className="shrink-0 rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[9.5px] font-semibold tabular-nums text-slate-400">
               {lineCount}
             </span>
           )}
+          {hint && (
+            <span className="hidden truncate text-[10px] font-medium text-slate-500 xl:inline" title={hint}>
+              {hint}
+            </span>
+          )}
         </div>
-        <CopyButton label="Copy" copied={copied} disabled={!has} onCopy={onCopy} />
+        <div className="flex shrink-0 items-center gap-1.5">
+          {onFocus && (
+            <button
+              type="button"
+              onClick={onFocus}
+              title="Show this part on its own, full size"
+              className="rounded-md border border-white/10 px-2 py-1 text-[10.5px] font-bold leading-none text-slate-400 transition hover:border-honey/40 hover:bg-honey/10 hover:text-honey"
+            >
+              ⤢
+            </button>
+          )}
+          <CopyButton label="Copy" copied={copied} disabled={!has} onCopy={onCopy} />
+        </div>
       </header>
       {has ? (
-        <pre className="sabre-scroll overflow-x-auto whitespace-pre px-5 py-4 font-mono text-[12.5px] leading-[1.8] text-slate-100 selection:bg-honey/30">
+        <pre
+          className={cn(
+            "sabre-scroll out-pre min-w-0 px-3.5 py-3 font-mono text-slate-100 selection:bg-honey/30",
+            wrap ? "out-pre-wrap" : "out-pre-nowrap",
+            "overflow-x-auto lg:min-h-0 lg:flex-1 lg:overflow-y-auto"
+          )}
+        >
           {text}
         </pre>
       ) : (
-        <p className="px-5 py-4 text-[12.5px] italic text-slate-500">{emptyText ?? "—"}</p>
+        <p className="px-3.5 py-3 text-[12px] italic text-slate-500">{emptyText ?? "—"}</p>
       )}
     </section>
+  );
+}
+
+/* ---- shared notes list (parse notes, warnings, errors) ---- */
+
+function NotesList({ issues, info }: { issues: Issue[]; info: Issue | null }) {
+  if (issues.length === 0 && !info) return null;
+  return (
+    <div className="fade-up space-y-2">
+      {issues.map((issue, idx) => (
+        <IssueRow key={idx} issue={issue} />
+      ))}
+      {info && <IssueRow issue={info} />}
+    </div>
+  );
+}
+
+/* ---- top bar controls ---- */
+
+const segBtnCls = (on: boolean) =>
+  cn(
+    "px-2.5 py-1.5 text-[10.5px] font-bold tracking-wide transition",
+    on ? "bg-honey/15 text-honey" : "text-slate-400 hover:bg-white/[0.06] hover:text-white"
+  );
+
+const miniIconBtnCls =
+  "rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5 text-[11px] font-bold leading-none text-slate-300 transition hover:-translate-y-px hover:border-white/25 hover:bg-white/[0.07] hover:text-white";
+
+function TopBar({
+  hero,
+  onToggleHero,
+  mode,
+  onMode,
+  densityIndex,
+  onDensityIndex,
+  wrap,
+  onToggleWrap,
+  isFullscreen,
+  onToggleFullscreen,
+  salat,
+}: {
+  hero: boolean;
+  onToggleHero: () => void;
+  mode: ViewMode;
+  onMode: (m: ViewMode) => void;
+  densityIndex: number;
+  onDensityIndex: (i: number) => void;
+  wrap: boolean;
+  onToggleWrap: () => void;
+  isFullscreen: boolean;
+  onToggleFullscreen: () => void;
+  salat: string;
+}) {
+  const step = DENSITY_STEPS[densityIndex];
+  return (
+    <header className="relative z-20 shrink-0 border-b border-white/[0.07] bg-[#06090f]/85 backdrop-blur-md">
+      <div className="mx-auto flex max-w-[1800px] flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5 sm:px-5">
+        {/* brand — click to open the full title screen */}
+        <button
+          type="button"
+          onClick={onToggleHero}
+          title={hero ? "Hide the full title screen" : "Show the full title screen"}
+          className="group flex shrink-0 items-center gap-2.5 text-left"
+        >
+          <span className="text-[19px] leading-none drop-shadow-[0_3px_12px_rgba(245,197,24,0.45)]">🍯</span>
+          <span className="text-[15px] font-extrabold leading-none tracking-tight">
+            <span className="text-gold">El 3asool Converter</span>
+          </span>
+          <span className="hidden items-center gap-1.5 rounded-full border border-honey/25 bg-honey/[0.07] px-2 py-0.5 text-[9px] font-bold tracking-[0.22em] text-honey lg:inline-flex">
+            <span className="glow-pulse h-1 w-1 rounded-full bg-honey" />
+            SABRE / GDS
+          </span>
+          <span
+            className={cn(
+              "text-[9px] text-slate-500 transition-transform group-hover:text-honey",
+              hero ? "rotate-180" : "rotate-0"
+            )}
+          >
+            ▼
+          </span>
+        </button>
+
+        {/* remembrance — always visible, sized to fit the bar */}
+        <div className="order-last w-full text-center sm:order-none sm:w-auto sm:min-w-0 sm:flex-1">
+          <span
+            dir="rtl"
+            lang="ar"
+            className="font-arabic text-[15px] leading-tight text-amber-50/90 [text-shadow:0_2px_16px_rgba(245,197,24,0.25)] sm:text-[17px]"
+          >
+            {salat}
+          </span>
+        </div>
+
+        {/* workspace controls */}
+        <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <div className="flex items-center overflow-hidden rounded-lg border border-white/10 bg-white/[0.03]">
+            <button
+              type="button"
+              onClick={() => onDensityIndex(Math.max(0, densityIndex - 1))}
+              disabled={densityIndex === 0}
+              title="Smaller text"
+              className="px-2 py-1.5 text-[11px] font-bold text-slate-300 transition hover:bg-white/[0.07] hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
+            >
+              A−
+            </button>
+            <span
+              title={`Text size inside the app — ${step.title}. Nothing about the copied Sabre text changes.`}
+              className="min-w-[52px] border-x border-white/10 px-1.5 py-1.5 text-center text-[10px] font-bold tabular-nums text-slate-400"
+            >
+              {step.label}
+            </span>
+            <button
+              type="button"
+              onClick={() => onDensityIndex(Math.min(DENSITY_STEPS.length - 1, densityIndex + 1))}
+              disabled={densityIndex === DENSITY_STEPS.length - 1}
+              title="Larger text"
+              className="px-2 py-1.5 text-[11px] font-bold text-slate-300 transition hover:bg-white/[0.07] hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
+            >
+              A+
+            </button>
+          </div>
+
+          <div className="flex items-center overflow-hidden rounded-lg border border-white/10 bg-white/[0.03]">
+            <button
+              type="button"
+              onClick={() => onMode("split")}
+              title="Split workspace — source on the left, Sabre result on the right, all on one screen"
+              className={segBtnCls(mode === "split")}
+            >
+              ▤ Split
+            </button>
+            <button
+              type="button"
+              onClick={() => onMode("stack")}
+              title="Classic stacked layout — everything in one scrolling column"
+              className={cn(segBtnCls(mode === "stack"), "border-l border-white/10")}
+            >
+              ☰ Classic
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={onToggleWrap}
+            title={wrap ? "Line wrapping is on — long entries wrap instead of hiding off-screen" : "Line wrapping is off — every entry stays on one line"}
+            className={cn(miniIconBtnCls, wrap && "border-honey/40 bg-honey/10 text-honey hover:border-honey/60")}
+          >
+            ⏎ Wrap
+          </button>
+
+          <button
+            type="button"
+            onClick={onToggleFullscreen}
+            title={isFullscreen ? "Leave fullscreen" : "Fullscreen — hide the browser chrome for maximum room"}
+            className={miniIconBtnCls}
+          >
+            {isFullscreen ? "⤡" : "⤢"}
+          </button>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+/* ---- optional full title screen (the original header, slimmer) ---- */
+
+function HeroStrip({ salat }: { salat: string }) {
+  return (
+    <div className="fade-up relative shrink-0 overflow-hidden border-b border-white/[0.05]">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(60%_100%_at_50%_0%,rgba(245,197,24,0.12),transparent_72%)]" />
+      <div className="relative mx-auto max-w-3xl px-4 pb-3.5 pt-3 text-center">
+        <div className="flex items-center justify-center gap-4 px-2">
+          <span className="gold-rule hidden h-px flex-1 sm:block" />
+          <span className="text-[10px] text-honey/60">✦</span>
+          <span className="gold-rule hidden h-px flex-1 sm:block" />
+        </div>
+        <div
+          dir="rtl"
+          lang="ar"
+          className="font-arabic px-3 py-1.5 text-[1.5rem] leading-[2.3rem] text-amber-50 [text-shadow:0_2px_26px_rgba(245,197,24,0.28)] sm:text-[1.9rem] sm:leading-[2.8rem]"
+        >
+          {salat}
+        </div>
+        <div className="flex items-center justify-center gap-4 px-2">
+          <span className="gold-rule hidden h-px flex-1 sm:block" />
+          <span className="text-[10px] text-honey/60">✦</span>
+          <span className="gold-rule hidden h-px sm:block sm:flex-1" />
+        </div>
+        <h1 className="mt-2.5 text-[1.7rem] font-extrabold leading-tight tracking-tight sm:text-[2.15rem]">
+          <span className="text-gold">El 3asool Converter</span>{" "}
+          <span role="img" aria-label="honey" className="inline-block align-middle drop-shadow-[0_4px_18px_rgba(245,197,24,0.45)]">
+            🍯
+          </span>
+        </h1>
+        <p className="mt-1.5 text-[11.5px] font-medium text-slate-400">
+          Made by{" "}
+          <span className="bg-gradient-to-r from-amber-100 to-honey bg-clip-text font-semibold text-transparent">
+            Ziad El Asaal
+          </span>
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -302,6 +619,20 @@ export default function App() {
   const [learningOn, setLearningOn] = useState(isLearningEnabled());
   const [learnedOpen, setLearnedOpen] = useState(false);
   const [learnedVersion, setLearnedVersion] = useState(0);
+
+  /* ---- workspace / design state (purely visual, remembered per browser) ---- */
+  const [view, setView] = useState<ViewPrefs>(() => loadViewPrefs());
+  const [paneTab, setPaneTab] = useState<PaneTab>("source");
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const split = view.mode === "split";
+
+  const setViewPref = useCallback(<K extends keyof ViewPrefs>(key: K, value: ViewPrefs[K]) => {
+    setView((prev) => {
+      const next = { ...prev, [key]: value };
+      saveViewPrefs(next);
+      return next;
+    });
+  }, []);
 
   /* ---- AI-assist state ---- */
   const [ai, setAi] = useState<AiSettings>(() => loadAiSettings());
@@ -668,8 +999,110 @@ export default function App() {
 
   const processing = ocrStatus === "processing";
 
+  /* ---- a pending cabin choice lives in the source tab: never leave it hidden ---- */
+  useEffect(() => {
+    if (!split) return;
+    if (result && result.missingCabinFlights.length > 0 && !fallbackCabin) setPaneTab("source");
+  }, [split, result, fallbackCabin]);
+
+  /* ---- which of the four output sections are on screen right now ---- */
+  const showCard = (id: OutTab): boolean => (split ? view.tab === "all" || view.tab === id : true);
+
+  /* ---- text-size control (index into DENSITY_STEPS) ---- */
+  const densityIndex = Math.max(
+    0,
+    DENSITY_STEPS.findIndex((d) => d.id === view.density)
+  );
+
+  /* ---- fullscreen ---- */
+  const toggleFullscreen = useCallback(() => {
+    try {
+      if (document.fullscreenElement) {
+        void document.exitFullscreen().catch(() => undefined);
+      } else {
+        void document.documentElement.requestFullscreen().catch(() => {
+          setPasteHint("Fullscreen was blocked by the browser — press F11 (or ⌃⌘F) instead.");
+        });
+      }
+    } catch {
+      setPasteHint("Fullscreen is not available here — press F11 (or ⌃⌘F) instead.");
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
+  /* ---- one button for all four sections (handy for notes / e-mail) ---- */
+  const copyAllText = useMemo(() => {
+    if (!liveResult) return "";
+    return [liveResult.itinerary, liveResult.outbound, liveResult.inbound, liveResult.individual]
+      .filter((part) => part.trim().length > 0)
+      .join("\n\n");
+  }, [liveResult]);
+
+  /* ---- shared props for the self-learning panel ---- */
+  const learningPanelProps = {
+    open: learnedOpen,
+    onToggle: () => setLearnedOpen((v) => !v),
+    learningOn,
+    onToggleLearning: toggleLearning,
+    itineraries: learnedRules.itineraries,
+    flights: learnedRules.flights,
+    aircraft: learnedRules.aircraft,
+    onForgetItinerary: handleForgetItinerary,
+    onForgetFlight: handleForgetFlight,
+    onForgetAircraft: handleForgetAircraft,
+    onClearAll: handleClearLearned,
+  };
+
+  /* ---- the input toolbar: identical in both layouts ---- */
+  const actionButtons = (
+    <>
+      <button
+        type="button"
+        onClick={() => setAiOpen((v) => !v)}
+        className={cn(
+          "rounded-lg border px-2.5 py-1.5 text-[11.5px] font-semibold transition hover:-translate-y-px",
+          ai.enabled && ai.apiKey
+            ? "border-honey/45 bg-honey/[0.12] text-honey shadow-[0_0_18px_rgba(245,197,24,0.16)] hover:bg-honey/20"
+            : "border-white/10 bg-white/[0.03] text-slate-300 hover:border-white/25 hover:bg-white/[0.07] hover:text-white"
+        )}
+        title="Use an AI model to read unfamiliar itinerary layouts"
+      >
+        🧭 AI Assist{ai.enabled && ai.apiKey ? " · on" : ""}
+      </button>
+      <button
+        type="button"
+        onClick={readClipboardImage}
+        className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11.5px] font-semibold text-slate-300 transition hover:-translate-y-px hover:border-white/25 hover:bg-white/[0.07] hover:text-white"
+      >
+        Paste screenshot
+      </button>
+      <label className="cursor-pointer rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11.5px] font-semibold text-slate-300 transition hover:-translate-y-px hover:border-white/25 hover:bg-white/[0.07] hover:text-white">
+        Upload image
+        <input type="file" accept="image/*" className="hidden" onChange={onPickFile} />
+      </label>
+      <button
+        type="button"
+        onClick={clearAll}
+        className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11.5px] font-semibold text-rose-200/90 transition hover:-translate-y-px hover:border-rose-300/45 hover:bg-rose-400/10 hover:text-rose-100"
+      >
+        Clear
+      </button>
+    </>
+  );
+
   return (
-    <div className="relative min-h-screen overflow-x-hidden">
+    <div
+      data-density={view.density}
+      className={cn(
+        "app-shell relative min-h-screen overflow-x-hidden",
+        split && "lg:flex lg:h-[100dvh] lg:min-h-0 lg:flex-col lg:overflow-hidden"
+      )}
+    >
       {/* backdrop */}
       <div className="pointer-events-none fixed inset-0">
         <div className="app-grid absolute inset-0" />
@@ -680,107 +1113,95 @@ export default function App() {
         <div className="absolute inset-x-0 bottom-0 h-80 bg-gradient-to-t from-[#05070d] to-transparent" />
       </div>
 
-      <main className="relative mx-auto w-full max-w-7xl px-4 pb-20 pt-9 sm:px-6">
-        {/* ============ header ============ */}
-        <header className="text-center">
-          {/* Arabic remembrance — framed, centered, RTL */}
-          <div className="fade-up relative mx-auto max-w-3xl">
-            <div className="pointer-events-none absolute inset-0 -z-10 rounded-[28px] bg-[radial-gradient(60%_100%_at_50%_50%,rgba(245,197,24,0.10),transparent_72%)]" />
-            <div className="flex items-center justify-center gap-4 px-2">
-              <span className="gold-rule hidden h-px flex-1 sm:block" />
-              <span className="text-xs text-honey/60">✦</span>
-              <span className="gold-rule hidden h-px flex-1 sm:block" />
+      {/* ============ top bar — brand, remembrance, workspace controls ============ */}
+      <TopBar
+        salat={SALAT}
+        hero={view.hero}
+        onToggleHero={() => setViewPref("hero", !view.hero)}
+        mode={view.mode}
+        onMode={(m) => setViewPref("mode", m)}
+        densityIndex={densityIndex}
+        onDensityIndex={(i) => setViewPref("density", DENSITY_STEPS[i].id)}
+        wrap={view.wrap}
+        onToggleWrap={() => setViewPref("wrap", !view.wrap)}
+        isFullscreen={isFullscreen}
+        onToggleFullscreen={toggleFullscreen}
+      />
+
+      {/* the full title screen, only when the user asks for it */}
+      {view.hero && <HeroStrip salat={SALAT} />}
+
+      <main
+        className={cn(
+          "relative mx-auto w-full max-w-5xl px-4 pb-20 pt-9 sm:px-6",
+          split && "lg:flex lg:max-w-[1800px] lg:min-h-0 lg:flex-1 lg:flex-col lg:gap-3 lg:px-5 lg:pb-2.5 lg:pt-3"
+        )}
+      >
+        <div
+          className={cn(
+            split
+              ? "space-y-4 lg:grid lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,0.94fr)_minmax(0,1.06fr)] lg:items-stretch lg:gap-3.5 lg:space-y-0"
+              : "space-y-5"
+          )}
+        >
+          {/* ============ LEFT PANE — the itinerary you paste ============ */}
+          <section
+            className={cn("glass fade-up flex min-w-0 flex-col overflow-hidden rounded-2xl", split && "lg:min-h-0")}
+          >
+          <div className="shrink-0 border-b border-white/[0.07] px-3.5 py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              {split ? (
+                <div className="flex items-center overflow-hidden rounded-lg border border-white/10 bg-white/[0.03]">
+                  <button
+                    type="button"
+                    onClick={() => setPaneTab("source")}
+                    title="The itinerary text or screenshot you pasted"
+                    className={segBtnCls(paneTab === "source")}
+                  >
+                    <span className="text-honey/70">❯</span> SOURCE
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPaneTab("edit")}
+                    title="Review and correct every parsed flight — the Sabre result updates as you type"
+                    className={cn(
+                      segBtnCls(paneTab === "edit"),
+                      "flex items-center gap-1.5 border-l border-white/10"
+                    )}
+                  >
+                    <span aria-hidden>✏️</span> EDIT FLIGHTS
+                    <span className="rounded-full border border-white/10 bg-white/5 px-1.5 py-0.5 text-[9.5px] font-semibold tabular-nums text-slate-400">
+                      {liveResult?.segments.length ?? 0}
+                    </span>
+                    {editedCount > 0 && (
+                      <span className="rounded-full border border-honey/40 bg-honey/10 px-1.5 py-0.5 text-[9.5px] font-bold text-honey">
+                        {editedCount}
+                      </span>
+                    )}
+                  </button>
+                </div>
+              ) : (
+                <h2 className="flex items-center gap-2 text-[11px] font-bold tracking-[0.25em] text-slate-300">
+                  <span className="text-honey/70">❯</span>
+                  PASTE ITINERARY — TEXT OR SCREENSHOT
+                </h2>
+              )}
+              {!split && <div className="flex flex-wrap items-center gap-1.5">{actionButtons}</div>}
             </div>
-            <div
-              dir="rtl"
-              lang="ar"
-              className="font-arabic px-3 py-5 text-[2rem] leading-[2.7rem] text-amber-50 [text-shadow:0_2px_26px_rgba(245,197,24,0.28)] sm:text-[2.6rem] sm:leading-[3.6rem]"
-            >
-            اللَّهُمَّ صَلِّ وَسَلِّمْ عَلَى نَبِيِّنَا مُحَمَّدٍ
-            </div>
-            <div className="flex items-center justify-center gap-4 px-2">
-              <span className="gold-rule hidden h-px flex-1 sm:block" />
-              <span className="text-xs text-honey/60">✦</span>
-              <span className="gold-rule hidden h-px flex-1 sm:block" />
-            </div>
+            {split && <div className="mt-2 flex flex-wrap items-center gap-1.5">{actionButtons}</div>}
           </div>
 
-          <div className="mt-9">
-            <span className="inline-flex items-center gap-2 rounded-full border border-honey/25 bg-honey/[0.07] px-3.5 py-1 text-[10px] font-bold tracking-[0.38em] text-honey">
-              <span className="glow-pulse h-1.5 w-1.5 rounded-full bg-honey" />
-              SABRE / GDS
-            </span>
-          </div>
-
-          <h1 className="relative mt-3.5 text-[2.6rem] font-extrabold leading-[1.1] tracking-tight sm:text-[3.4rem]">
-            <span className="text-gold">El 3asool Converter</span>{" "}
-            <span
-              role="img"
-              aria-label="honey"
-              className="inline-block align-middle drop-shadow-[0_4px_18px_rgba(245,197,24,0.45)]"
-            >
-              🍯
-            </span>
-          </h1>
-
-          <p className="mt-4 text-[12.5px] font-medium text-slate-400">
-            Made by{" "}
-            <span className="bg-gradient-to-r from-amber-100 to-honey bg-clip-text font-semibold text-transparent">
-              Ziad El Asaal
-            </span>
-          </p>
-        </header>
-
-        {/* ============ workspace: itinerary paste (left) + answer boxes (right) ============ */}
-        <div className="mt-9 grid items-start gap-5 lg:grid-cols-2 lg:gap-6">
-          <div className="min-w-0">
-            {/* ============ input card ============ */}
-            <section className="glass fade-up rounded-2xl p-4 sm:p-5">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <h2 className="flex items-center gap-2 text-[11px] font-bold tracking-[0.25em] text-slate-300">
-              <span className="text-honey/70">❯</span>
-              PASTE ITINERARY — TEXT OR SCREENSHOT
-            </h2>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setAiOpen((v) => !v)}
-                className={cn(
-                  "rounded-lg border px-3 py-1.5 text-xs font-semibold transition hover:-translate-y-px",
-                  ai.enabled && ai.apiKey
-                    ? "border-honey/45 bg-honey/[0.12] text-honey shadow-[0_0_18px_rgba(245,197,24,0.16)] hover:bg-honey/20"
-                    : "border-white/10 bg-white/[0.03] text-slate-300 hover:border-white/25 hover:bg-white/[0.07] hover:text-white"
-                )}
-                title="Use an AI model to read unfamiliar itinerary layouts"
-              >
-                🧭 AI Assist{ai.enabled && ai.apiKey ? " · on" : ""}
-              </button>
-              <button
-                type="button"
-                onClick={readClipboardImage}
-                className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:-translate-y-px hover:border-white/25 hover:bg-white/[0.07] hover:text-white"
-              >
-                Paste screenshot
-              </button>
-              <label className="cursor-pointer rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:-translate-y-px hover:border-white/25 hover:bg-white/[0.07] hover:text-white">
-                Upload image
-                <input type="file" accept="image/*" className="hidden" onChange={onPickFile} />
-              </label>
-              <button
-                type="button"
-                onClick={clearAll}
-                className="rounded-lg border border-white/10 bg-white/[0.03] px-3.5 py-1.5 text-xs font-semibold text-rose-200/90 transition hover:-translate-y-px hover:border-rose-300/45 hover:bg-rose-400/10 hover:text-rose-100"
-              >
-                Clear
-              </button>
-            </div>
-          </div>
+          {/* pane body */}
+          <div className={cn("flex min-w-0 flex-col gap-3 p-3.5", split && "lg:min-h-0 lg:flex-1 lg:overflow-y-auto")}>
+            {(!split || paneTab === "source") && (
+              <div className={cn("flex min-w-0 flex-col gap-3", split && "lg:flex-1")}>
 
           <div
             onDragOver={(e) => e.preventDefault()}
             onDrop={onDrop}
             className={cn(
               "relative rounded-xl border transition-all duration-300",
+              split && "lg:flex lg:min-h-[9.5rem] lg:flex-1 lg:flex-col",
               processing
                 ? "border-honey/45 bg-honey/[0.04]"
                 : "border-white/10 bg-slate-950/70 focus-within:border-honey/55 focus-within:shadow-[0_0_0_4px_rgba(245,197,24,0.07)]"
@@ -792,7 +1213,10 @@ export default function App() {
               onChange={(e) => setText(e.target.value)}
               spellCheck={false}
               placeholder={"Paste a flight itinerary here…\n\nText works: ⌘V / Ctrl+V\nScreenshots work too: ⌘V / Ctrl+V directly in this box\n\nOr drag & drop an image."}
-              className="sabre-scroll block min-h-[190px] w-full resize-y rounded-xl bg-transparent p-4 font-mono text-[13px] leading-relaxed text-slate-100 placeholder:text-slate-600 focus:outline-none"
+              className={cn(
+                "sabre-scroll in-textarea block w-full resize-y rounded-xl bg-transparent p-3.5 font-mono text-slate-100 placeholder:text-slate-600 focus:outline-none",
+                split ? "lg:min-h-0 lg:flex-1 lg:resize-none" : "min-h-[190px]"
+              )}
             />
 
             {/* OCR overlay */}
@@ -908,6 +1332,9 @@ export default function App() {
           {aiRetry && <p className="mt-2 text-[11.5px] text-amber-300/90">{aiRetry}</p>}
           {aiError && <p className="mt-2 text-[11.5px] text-rose-300/90">{aiError}</p>}
 
+          {/* ---- parse notes: warnings, errors and the learned-memory hint ---- */}
+          <NotesList issues={showIssues} info={infoIssue} />
+
           {/* ---- AI Assist panel ---- */}
           {aiOpen && (
             <div className="fade-up mt-4 rounded-xl border border-honey/25 bg-honey/[0.04] p-4">
@@ -1018,102 +1445,243 @@ export default function App() {
                 </button>
               </div>
             </div>
+            )}
+              </div>
+            )}
+
+            {split && paneTab === "edit" && (
+              <>
+                <FlightEditor
+                  embedded
+                  open
+                  onToggle={() => setPaneTab("source")}
+                  segments={edited ?? liveResult?.segments ?? []}
+                  resultSegments={result?.segments ?? []}
+                  editedCount={editedCount}
+                  onUpdate={updateSegment}
+                  onReset={resetEdits}
+                  learningOn={learningOn}
+                />
+                <NotesList issues={showIssues} info={infoIssue} />
+              </>
+            )}
+          </div>
+          </section>
+
+          {/* ============ notes (classic layout keeps them between the panes) ============ */}
+          {!split && (showIssues.length > 0 || infoIssue) && (
+            <div className="space-y-2">
+              {showIssues.map((issue, idx) => (
+                <IssueRow key={idx} issue={issue} />
+              ))}
+              {infoIssue && <IssueRow issue={infoIssue} />}
+            </div>
           )}
-        </section>
 
-        {/* ============ issues ============ */}
-        {(showIssues.length > 0 || infoIssue) && (
-          <div className="mt-5 space-y-2">
-            {showIssues.map((issue, idx) => (
-              <IssueRow key={idx} issue={issue} />
-            ))}
-            {infoIssue && <IssueRow issue={infoIssue} />}
-          </div>
-        )}
-          </div>
+          {/* ============ RIGHT PANE — the Sabre result ============ */}
+          <section
+            className={cn(
+              "fade-up flex min-w-0 flex-col",
+              split ? "glass overflow-hidden rounded-2xl lg:min-h-0" : "space-y-5"
+            )}
+          >
+            {/* toolbar: sections count, section tabs, copy-all */}
+            <div className={cn("shrink-0", split && "border-b border-white/[0.07] px-3.5 py-2.5")}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="hidden items-center gap-2 text-[11px] font-bold tracking-[0.22em] text-slate-300 sm:flex">
+                  <span className="text-honey/70">◈</span> SABRE OUTPUT
+                </span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {liveResult?.hasOutput && (
+                    <>
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-honey/25 bg-honey/[0.07] px-3 py-1 text-[10.5px] font-bold tracking-[0.12em] text-honey">
+                        <span className="h-1.5 w-1.5 rounded-full bg-honey" />
+                        {liveResult.segments.length} SEGMENT{liveResult.segments.length > 1 ? "S" : ""}
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-slate-300">
+                        <span className="h-1.5 w-1.5 rounded-full bg-sky-400/80" />
+                        {outCount} OUTBOUND
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-slate-300">
+                        <span className="h-1.5 w-1.5 rounded-full bg-violet-400/80" />
+                        {inCount} INBOUND
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {split && (
+                    <button
+                      type="button"
+                      onClick={() => setPaneTab(paneTab === "edit" ? "source" : "edit")}
+                      title="Review and correct every parsed flight on the left — the Sabre result follows as you type"
+                      className={cn(
+                        "rounded-lg border px-2.5 py-1.5 text-[10.5px] font-bold tracking-wide transition",
+                        paneTab === "edit"
+                          ? "border-honey/50 bg-honey/15 text-honey hover:bg-honey/25"
+                          : "border-white/10 bg-white/[0.03] text-slate-300 hover:border-white/25 hover:text-white"
+                      )}
+                    >
+                      ✏️ Edit flights
+                      {editedCount > 0 && (
+                        <span className="ml-1.5 rounded-full bg-honey/20 px-1.5 py-0.5 text-[9.5px] font-bold text-honey">
+                          {editedCount}
+                        </span>
+                      )}
+                    </button>
+                  )}
+                  {editedCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={resetEdits}
+                      className="rounded-lg border border-white/10 px-2.5 py-1.5 text-[10.5px] font-semibold text-slate-400 transition hover:border-white/25 hover:text-white"
+                      title="Throw away your corrections and go back to the parsed flights"
+                    >
+                      Reset {editedCount} edit{editedCount > 1 ? "s" : ""}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void handleCopy("all", copyAllText)}
+                    disabled={!copyAllText}
+                    title="Copy all four sections at once — itinerary, outbound, inbound, individual"
+                    className={cn(
+                      "rounded-lg border px-2.5 py-1.5 text-[10.5px] font-bold tracking-wide transition",
+                      copied === "all"
+                        ? "border-emerald-400/45 bg-emerald-400/15 text-emerald-300"
+                        : "border-honey/35 bg-honey/[0.08] text-honey hover:border-honey/60 hover:bg-honey/20",
+                      !copyAllText && "cursor-not-allowed opacity-35 hover:border-honey/35 hover:bg-honey/[0.08]"
+                    )}
+                  >
+                    {copied === "all" ? "Copied ✓" : "⧉ Copy all 4"}
+                  </button>
+                </div>
+              </div>
 
-          {/* ============ output — answers beside the pasted itinerary ============ */}
-          <div className="min-w-0">
-        {liveResult && liveResult.hasOutput ? (
-          <div className="space-y-5">
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-honey/25 bg-honey/[0.07] px-3 py-1 text-[10.5px] font-bold tracking-[0.12em] text-honey">
-                <span className="h-1.5 w-1.5 rounded-full bg-honey" />
-                {liveResult.segments.length} SEGMENT{liveResult.segments.length > 1 ? "S" : ""}
-              </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-slate-300">
-                <span className="h-1.5 w-1.5 rounded-full bg-sky-400/80" />
-                {outCount} OUTBOUND
-              </span>
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[10.5px] font-semibold tracking-[0.12em] text-slate-300">
-                <span className="h-1.5 w-1.5 rounded-full bg-violet-400/80" />
-                {inCount} INBOUND
-              </span>
+              {split && (
+                <div className="mt-2 flex items-center gap-2 overflow-x-auto pb-0.5">
+                  <div className="flex items-center overflow-hidden rounded-lg border border-white/10 bg-white/[0.03]">
+                    {OUT_TABS.map((t, i) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setViewPref("tab", t.id)}
+                        title={t.hint}
+                        className={cn(
+                          segBtnCls(view.tab === t.id),
+                          "whitespace-nowrap",
+                          i > 0 && "border-l border-white/10"
+                        )}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                  <span className="ml-auto hidden whitespace-nowrap text-[10px] font-semibold text-slate-500 xl:inline">
+                    {view.wrap ? "long entries wrap onto the next line" : "one entry per line"}
+                  </span>
+                </div>
+              )}
             </div>
 
-            {/* ---- review & edit flights ---- */}
-            <FlightEditor
-              open={editorOpen}
-              onToggle={() => setEditorOpen((v) => !v)}
-              segments={edited ?? liveResult.segments}
-              resultSegments={result?.segments ?? []}
-              editedCount={editedCount}
-              onUpdate={updateSegment}
-              onReset={resetEdits}
-              learningOn={learningOn}
-            />
+            {liveResult && liveResult.hasOutput ? (
+              <div
+                className={cn(
+                  "min-w-0",
+                  split ? "flex min-h-0 flex-1 flex-col gap-3 p-3.5 lg:overflow-y-auto" : "space-y-5"
+                )}
+              >
+                {/* ---- review & edit flights (classic layout keeps it above the output) ---- */}
+                {!split && (
+                  <FlightEditor
+                    open={editorOpen}
+                    onToggle={() => setEditorOpen((v) => !v)}
+                    segments={edited ?? liveResult.segments}
+                    resultSegments={result?.segments ?? []}
+                    editedCount={editedCount}
+                    onUpdate={updateSegment}
+                    onReset={resetEdits}
+                    learningOn={learningOn}
+                  />
+                )}
 
-            {/* 1st row: SABRE ITINERARY (left) | INDIVIDUAL (right) */}
-            <div className="grid gap-5 md:grid-cols-2">
-              <OutputCard
-                title="SABRE ITINERARY"
-                text={liveResult.itinerary}
-                emptyText="Paste an itinerary to build the main entry."
-                copied={copied === "itin"}
-                onCopy={() => void handleCopy("itin", liveResult.itinerary)}
-              />
-              <OutputCard
-                title="INDIVIDUAL"
-                text={liveResult.individual}
-                emptyText="—"
-                copied={copied === "ind"}
-                onCopy={() => void handleCopy("ind", liveResult.individual)}
-              />
-            </div>
-            {/* OUTBOUND — one full line under the first row */}
-            <OutputCard
-              title="OUTBOUND"
-              text={liveResult.outbound}
-              emptyText="No outbound flights."
-              copied={copied === "out"}
-              onCopy={() => void handleCopy("out", liveResult.outbound)}
-            />
-            {/* INBOUND — one full line under the outbound */}
-            <OutputCard
-              title="INBOUND"
-              text={liveResult.inbound}
-              emptyText="No inbound flights."
-              copied={copied === "in"}
-              onCopy={() => void handleCopy("in", liveResult.inbound)}
-            />
+                {/* ---- the four Sabre sections ---- */}
+                {showCard("itinerary") && (
+                  <OutputCard
+                    title="SABRE ITINERARY"
+                    titleAttr="Main entry — the itinerary block you paste into Sabre"
+                    text={liveResult.itinerary}
+                    emptyText="Paste an itinerary to build the main entry."
+                    copied={copied === "itin"}
+                    onCopy={() => void handleCopy("itin", liveResult.itinerary)}
+                    wrap={view.wrap}
+                    onFocus={split && view.tab === "all" ? () => setViewPref("tab", "itinerary") : undefined}
+                    className={cn(split && "lg:min-h-0", split && (view.tab === "all" ? "lg:flex-[1.6]" : "lg:flex-1"))}
+                  />
+                )}
 
-            {/* ---- self-learning manager ---- */}
-            <LearningPanel
-              open={learnedOpen}
-              onToggle={() => setLearnedOpen((v) => !v)}
-              learningOn={learningOn}
-              onToggleLearning={toggleLearning}
-              itineraries={learnedRules.itineraries}
-              flights={learnedRules.flights}
-              aircraft={learnedRules.aircraft}
-              onForgetItinerary={handleForgetItinerary}
-              onForgetFlight={handleForgetFlight}
-              onForgetAircraft={handleForgetAircraft}
-              onClearAll={handleClearLearned}
-            />
-          </div>
-        ) : (
-          <div className="fade-up rounded-2xl border border-dashed border-white/[0.09] bg-white/[0.015] px-6 py-16 text-center">
+                {(showCard("outbound") || showCard("inbound")) && (
+                  <div
+                    className={cn(
+                      "grid min-w-0",
+                      split ? "gap-3" : "gap-5",
+                      split && "lg:min-h-0 lg:flex-1",
+                      split && (view.tab === "all" ? "lg:grid-cols-2" : "lg:grid-cols-1")
+                    )}
+                  >
+                    {showCard("outbound") && (
+                      <OutputCard
+                        title="OUTBOUND"
+                        titleAttr="Outbound chain — every flight carries its own NN1"
+                        text={liveResult.outbound}
+                        emptyText="No outbound flights."
+                        copied={copied === "out"}
+                        onCopy={() => void handleCopy("out", liveResult.outbound)}
+                        wrap={view.wrap}
+                        onFocus={split && view.tab === "all" ? () => setViewPref("tab", "outbound") : undefined}
+                        className={cn(split && "lg:min-h-0")}
+                      />
+                    )}
+                    {showCard("inbound") && (
+                      <OutputCard
+                        title="INBOUND"
+                        titleAttr="Inbound chain — every flight carries its own NN1"
+                        text={liveResult.inbound}
+                        emptyText="No inbound flights."
+                        copied={copied === "in"}
+                        onCopy={() => void handleCopy("in", liveResult.inbound)}
+                        wrap={view.wrap}
+                        onFocus={split && view.tab === "all" ? () => setViewPref("tab", "inbound") : undefined}
+                        className={cn(split && "lg:min-h-0")}
+                      />
+                    )}
+                  </div>
+                )}
+
+                {showCard("individual") && (
+                  <OutputCard
+                    title="INDIVIDUAL"
+                    titleAttr="One GK1 sell entry per flight — in itinerary order"
+                    text={liveResult.individual}
+                    emptyText="—"
+                    copied={copied === "ind"}
+                    onCopy={() => void handleCopy("ind", liveResult.individual)}
+                    wrap={view.wrap}
+                    onFocus={split && view.tab === "all" ? () => setViewPref("tab", "individual") : undefined}
+                    className={cn(split && "lg:min-h-0", split && "lg:flex-1")}
+                  />
+                )}
+
+                {/* ---- self-learning manager (classic layout) ---- */}
+                {!split && <LearningPanel {...learningPanelProps} variant="card" />}
+              </div>
+            ) : (
+          <div
+            className={cn(
+              "fade-up rounded-2xl border border-dashed border-white/[0.09] bg-white/[0.015] px-6 py-16 text-center",
+              split ? "mt-3.5 flex min-h-0 flex-1 flex-col items-center justify-center lg:py-10" : "mt-6"
+            )}
+          >
             {text.trim() ? (
               <p className="text-sm text-slate-500">
                 Nothing convertible yet — check the notes above, or adjust the itinerary text.
@@ -1142,17 +1710,20 @@ export default function App() {
             )}
           </div>
         )}
-          </div>
+          </section>
         </div>
 
-        <footer className="mt-12 pb-4 text-center">
-          <div className="gold-rule mx-auto mb-4 h-px w-40 opacity-50" />
-          <p className="text-[10.5px] tracking-wide text-slate-600">
-            El 3asool Converter 🍯 · SABRE / GDS · Made by{" "}
-            <span className="text-slate-500">Ziad El Asaal</span>
-          </p>
-        </footer>
+        {/* ---- self-learning bar (split layout: stays out of the way) ---- */}
+        {split && <LearningPanel {...learningPanelProps} variant="bar" />}
       </main>
+
+      <footer className={cn("relative mt-12 pb-4 text-center", split && "lg:mt-0 lg:shrink-0 lg:pb-1.5")}>
+        <div className={cn("gold-rule mx-auto mb-4 h-px w-40 opacity-50", split && "lg:hidden")} />
+        <p className="text-[10.5px] tracking-wide text-slate-600">
+          El 3asool Converter 🍯 · SABRE / GDS · Made by{" "}
+          <span className="text-slate-500">Ziad El Asaal</span>
+        </p>
+      </footer>
     </div>
   );
 }
@@ -1176,6 +1747,9 @@ interface FlightEditorProps {
   onUpdate: (idx: number, patch: Partial<Segment>) => void;
   onReset: () => void;
   learningOn: boolean;
+  /** rendered inside the source pane of the split workspace: always visible, no header */
+  embedded?: boolean;
+  className?: string;
 }
 
 function FlightEditor({
@@ -1187,9 +1761,37 @@ function FlightEditor({
   onUpdate,
   onReset,
   learningOn,
+  embedded = false,
+  className,
 }: FlightEditorProps) {
+  const gridCls = embedded
+    ? "grid grid-cols-2 gap-2.5 sm:grid-cols-3 2xl:grid-cols-4"
+    : "grid grid-cols-2 gap-2.5 sm:grid-cols-4";
+  const wideCls = embedded ? "col-span-2 sm:col-span-3 2xl:col-span-4" : "col-span-2 sm:col-span-4";
+
+  const intro = (
+    <div className="flex flex-wrap items-start justify-between gap-2">
+      <p className="text-[11px] leading-relaxed text-slate-500">
+        Every field below is editable — the Sabre output updates instantly.
+        {learningOn
+          ? " With self-learning on, your corrections are remembered per flight and applied automatically next time."
+          : " Turn self-learning on to remember these corrections for future conversions."}
+      </p>
+      {embedded && editedCount > 0 && (
+        <button
+          type="button"
+          onClick={onReset}
+          className="shrink-0 rounded-md border border-white/10 px-2 py-1 text-[10.5px] font-semibold text-slate-400 transition hover:border-white/25 hover:text-white"
+        >
+          Reset {editedCount} edit{editedCount > 1 ? "s" : ""}
+        </button>
+      )}
+    </div>
+  );
+
   return (
-    <div className="glass overflow-hidden rounded-2xl">
+    <div className={cn(embedded ? "min-w-0" : "glass overflow-hidden rounded-2xl", className)}>
+      {!embedded && (
       <button
         type="button"
         onClick={onToggle}
@@ -1237,15 +1839,11 @@ function FlightEditor({
           </svg>
         </span>
       </button>
+      )}
 
-      {open && (
-        <div className="space-y-3 border-t border-white/10 p-3 sm:p-4">
-          <p className="text-[11px] leading-relaxed text-slate-500">
-            Every field below is editable — the Sabre output above updates instantly.
-            {learningOn
-              ? " With self-learning on, your corrections are remembered per flight and applied automatically next time."
-              : " Turn self-learning on to remember these corrections for future conversions."}
-          </p>
+      {(embedded || open) && (
+        <div className={cn("space-y-3", embedded ? "min-w-0" : "border-t border-white/10 p-3 sm:p-4")}>
+          {intro}
           {segments.map((s, idx) => {
             const original = resultSegments[idx];
             const isEdited = original && !shallowSame(s, original);
@@ -1272,7 +1870,7 @@ function FlightEditor({
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                <div className={gridCls}>
                   <div>
                     <label className={labelCls}>Airline</label>
                     <input
@@ -1422,7 +2020,7 @@ function FlightEditor({
                       <option value="IN">Inbound</option>
                     </select>
                   </div>
-                  <div className="col-span-2 sm:col-span-4">
+                  <div className={wideCls}>
                     <label className={labelCls}>Operated by</label>
                     <input
                       className={inputCls}
@@ -1457,6 +2055,8 @@ interface LearningPanelProps {
   onForgetFlight: (key: string) => void;
   onForgetAircraft: (phrase: string) => void;
   onClearAll: () => void;
+  /** "bar" = compact strip + upward drawer (split workspace), "card" = classic collapsible card */
+  variant?: "card" | "bar";
 }
 
 function LearningPanel({
@@ -1471,8 +2071,184 @@ function LearningPanel({
   onForgetFlight,
   onForgetAircraft,
   onClearAll,
+  variant = "card",
 }: LearningPanelProps) {
   const total = itineraries.length + flights.length + aircraft.length;
+  const countChip = (
+    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-slate-400">
+      {total} rule{total === 1 ? "" : "s"}
+    </span>
+  );
+
+  const list = (
+    <div className="space-y-3">
+        {total === 0 && (
+          <p className="text-[11.5px] leading-relaxed text-slate-500">
+            Nothing learned yet. When you use AI Assist to extract flights or edit any flight in “Review &amp; edit
+            flights”, the tool automatically saves the itinerary, flights, and aircraft so future conversions of that
+            same flight or itinerary work instantly without AI.
+          </p>
+        )}
+
+        {itineraries.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+              Learned Itineraries (from AI)
+            </p>
+            <ul className="space-y-1.5">
+              {itineraries.map((it) => (
+                <li
+                  key={it.id}
+                  className="flex items-start justify-between gap-3 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2"
+                >
+                  <div className="min-w-0 text-[11.5px] leading-relaxed text-slate-300">
+                    <div className="font-bold text-slate-100 flex items-center gap-1.5">
+                      <span className="text-honey">⚡</span> {it.summary}
+                    </div>
+                    <p className="truncate text-[10.5px] text-slate-500 mt-0.5">
+                      “{it.originalSnippet}” · Learned {new Date(it.updatedAt).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onForgetItinerary(it.id)}
+                    className="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[10.5px] font-semibold text-slate-400 transition hover:border-rose-300/40 hover:text-rose-200"
+                  >
+                    Forget
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {flights.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+              Flight corrections
+            </p>
+            <ul className="space-y-1.5">
+              {flights.map((f) => (
+                <li
+                  key={flightKey(f.airline, f.num, f.origin, f.dest)}
+                  className="flex items-start justify-between gap-3 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2"
+                >
+                  <div className="min-w-0 text-[11.5px] leading-relaxed text-slate-300">
+                    <span className="font-bold text-slate-100">
+                      {f.airline} {f.num} · {f.origin} → {f.dest}
+                    </span>
+                    <span className="ml-2 text-slate-500">
+                      {f.cabin} / {f.bookingClass} · {f.equip}
+                      {f.operatedBy ? ` · op: ${f.operatedBy}` : ""}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onForgetFlight(flightKey(f.airline, f.num, f.origin, f.dest))}
+                    className="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[10.5px] font-semibold text-slate-400 transition hover:border-rose-300/40 hover:text-rose-200"
+                  >
+                    Forget
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {aircraft.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+              Aircraft phrases
+            </p>
+            <ul className="space-y-1.5">
+              {aircraft.map((a) => (
+                <li
+                  key={a.phrase}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-[11.5px] text-slate-300"
+                >
+                  <span className="truncate">
+                    “{a.phrase}” <span className="text-slate-500">→</span>{" "}
+                    <span className="font-bold text-slate-100">{a.equip}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onForgetAircraft(a.phrase)}
+                    className="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[10.5px] font-semibold text-slate-400 transition hover:border-rose-300/40 hover:text-rose-200"
+                  >
+                    Forget
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {total > 0 && (
+          <button
+            type="button"
+            onClick={onClearAll}
+            className="rounded-lg border border-rose-300/25 bg-rose-400/5 px-3 py-1.5 text-[11px] font-semibold text-rose-200/90 transition hover:border-rose-300/50 hover:bg-rose-400/10"
+          >
+            Clear all learned rules
+          </button>
+        )}
+    </div>
+  );
+
+  const switchRow = (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-[11.5px] text-slate-400">
+        Learn my corrections
+        <span className="ml-1.5 hidden text-[10.5px] text-slate-600 sm:inline">
+          (stored in this browser, applied to future conversions automatically)
+        </span>
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={learningOn}
+        onClick={() => onToggleLearning(!learningOn)}
+        className={cn(
+          "relative h-6 w-11 shrink-0 rounded-full transition-colors",
+          learningOn ? "bg-honey" : "bg-slate-700"
+        )}
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all",
+            learningOn ? "left-[22px]" : "left-0.5"
+          )}
+        />
+      </button>
+    </div>
+  );
+
+  /* ---- compact bar + drawer, used under the split workspace ---- */
+  if (variant === "bar") {
+    return (
+      <div className="relative shrink-0">
+        {open && (
+          <div className="glass sabre-scroll absolute bottom-full left-0 right-0 z-30 mb-2 max-h-[58vh] overflow-y-auto rounded-2xl p-3.5 shadow-[0_-26px_70px_-24px_rgba(0,0,0,0.95)]">
+            {list}
+          </div>
+        )}
+        <div className="glass flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-xl px-3.5 py-2">
+          <button
+            type="button"
+            onClick={onToggle}
+            className="flex items-center gap-2 text-[11px] font-bold tracking-[0.22em] text-slate-300 transition hover:text-white"
+          >
+            <span aria-hidden>🧠</span> SELF-LEARNING
+            {countChip}
+            <span className="text-[9px] text-slate-500">{open ? "▼" : "▲"}</span>
+          </button>
+          {switchRow}
+        </div>
+      </div>
+    );
+  }
+
+  /* ---- classic collapsible card ---- */
   return (
     <div className="glass overflow-hidden rounded-2xl">
       <button
@@ -1482,9 +2258,7 @@ function LearningPanel({
       >
         <span className="flex items-center gap-2 text-[11px] font-bold tracking-[0.25em] text-slate-300">
           <span aria-hidden>🧠</span> SELF-LEARNING
-          <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-slate-400">
-            {total} rule{total === 1 ? "" : "s"}
-          </span>
+          {countChip}
         </span>
         <svg
           className={cn("h-4 w-4 text-slate-500 transition-transform", open && "rotate-180")}
@@ -1497,146 +2271,9 @@ function LearningPanel({
         </svg>
       </button>
 
-      <div className="flex items-center justify-between gap-3 border-t border-white/10 px-4 py-2.5">
-        <span className="text-[11.5px] text-slate-400">
-          Learn my corrections
-          <span className="ml-1.5 hidden text-[10.5px] text-slate-600 sm:inline">
-            (stored in this browser, applied to future conversions automatically)
-          </span>
-        </span>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={learningOn}
-          onClick={() => onToggleLearning(!learningOn)}
-          className={cn(
-            "relative h-6 w-11 shrink-0 rounded-full transition-colors",
-            learningOn ? "bg-honey" : "bg-slate-700"
-          )}
-        >
-          <span
-            className={cn(
-              "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all",
-              learningOn ? "left-[22px]" : "left-0.5"
-            )}
-          />
-        </button>
-      </div>
+      <div className="border-t border-white/10 px-4 py-2.5">{switchRow}</div>
 
-      {open && (
-        <div className="space-y-3 border-t border-white/10 p-3 sm:p-4">
-          {total === 0 && (
-            <p className="text-[11.5px] leading-relaxed text-slate-500">
-              Nothing learned yet. When you use AI Assist to extract flights or edit any flight in “Review &amp; edit
-              flights”, the tool automatically saves the itinerary, flights, and aircraft so future conversions of that
-              same flight or itinerary work instantly without AI.
-            </p>
-          )}
-
-          {itineraries.length > 0 && (
-            <div>
-              <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                Learned Itineraries (from AI)
-              </p>
-              <ul className="space-y-1.5">
-                {itineraries.map((it) => (
-                  <li
-                    key={it.id}
-                    className="flex items-start justify-between gap-3 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2"
-                  >
-                    <div className="min-w-0 text-[11.5px] leading-relaxed text-slate-300">
-                      <div className="font-bold text-slate-100 flex items-center gap-1.5">
-                        <span className="text-honey">⚡</span> {it.summary}
-                      </div>
-                      <p className="truncate text-[10.5px] text-slate-500 mt-0.5">
-                        “{it.originalSnippet}” · Learned {new Date(it.updatedAt).toLocaleDateString()}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onForgetItinerary(it.id)}
-                      className="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[10.5px] font-semibold text-slate-400 transition hover:border-rose-300/40 hover:text-rose-200"
-                    >
-                      Forget
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {flights.length > 0 && (
-            <div>
-              <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                Flight corrections
-              </p>
-              <ul className="space-y-1.5">
-                {flights.map((f) => (
-                  <li
-                    key={flightKey(f.airline, f.num, f.origin, f.dest)}
-                    className="flex items-start justify-between gap-3 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2"
-                  >
-                    <div className="min-w-0 text-[11.5px] leading-relaxed text-slate-300">
-                      <span className="font-bold text-slate-100">
-                        {f.airline} {f.num} · {f.origin} → {f.dest}
-                      </span>
-                      <span className="ml-2 text-slate-500">
-                        {f.cabin} / {f.bookingClass} · {f.equip}
-                        {f.operatedBy ? ` · op: ${f.operatedBy}` : ""}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onForgetFlight(flightKey(f.airline, f.num, f.origin, f.dest))}
-                      className="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[10.5px] font-semibold text-slate-400 transition hover:border-rose-300/40 hover:text-rose-200"
-                    >
-                      Forget
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {aircraft.length > 0 && (
-            <div>
-              <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                Aircraft phrases
-              </p>
-              <ul className="space-y-1.5">
-                {aircraft.map((a) => (
-                  <li
-                    key={a.phrase}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2 text-[11.5px] text-slate-300"
-                  >
-                    <span className="truncate">
-                      “{a.phrase}” <span className="text-slate-500">→</span>{" "}
-                      <span className="font-bold text-slate-100">{a.equip}</span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => onForgetAircraft(a.phrase)}
-                      className="shrink-0 rounded-md border border-white/10 px-2 py-0.5 text-[10.5px] font-semibold text-slate-400 transition hover:border-rose-300/40 hover:text-rose-200"
-                    >
-                      Forget
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {total > 0 && (
-            <button
-              type="button"
-              onClick={onClearAll}
-              className="rounded-lg border border-rose-300/25 bg-rose-400/5 px-3 py-1.5 text-[11px] font-semibold text-rose-200/90 transition hover:border-rose-300/50 hover:bg-rose-400/10"
-            >
-              Clear all learned rules
-            </button>
-          )}
-        </div>
-      )}
+      {open && <div className="border-t border-white/10 p-3 sm:p-4">{list}</div>}
     </div>
   );
 }

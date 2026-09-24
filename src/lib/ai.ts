@@ -9,7 +9,7 @@
  *
  * The user supplies their own API key, stored only in this browser.
  */
-import type { Cabin, RawFlight } from "./types";
+import type { Cabin, ConverterResult, RawFlight } from "./types";
 import { timeToMinutes } from "./aiTime";
 import { findAircraftTokens, parseExplicitAircraftString } from "./aircraft";
 
@@ -99,6 +99,29 @@ export class AiError extends Error {
 }
 
 /** Overloaded / rate-limited / temporarily broken — safe and useful to retry. */
+/**
+ * Should AI Assist run on its own for a result the local parser produced?
+ *
+ * The deterministic parser stays the first and authoritative pass; AI is only
+ * a *fallback* for the situations the local rules genuinely cannot finish,
+ * which the converter already reports on its result:
+ *
+ *   - equipment came back as "---"        (failedEquipmentFlights)
+ *   - a "*" code-share flight with no operator resolved (failedOperatorFlights)
+ *   - a booking-class letter that is neither confirmed nor learned
+ *     (unknownClassQuestions)
+ *
+ * Pure and side-effect free, so the UI and the test suites share one rule.
+ */
+export function shouldAutoRunAi(result: ConverterResult | null | undefined): boolean {
+  if (!result) return false;
+  return (
+    result.failedEquipmentFlights.length > 0 ||
+    result.failedOperatorFlights.length > 0 ||
+    result.unknownClassQuestions.length > 0
+  );
+}
+
 export function isTransientStatus(status: number): boolean {
   return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
 }
