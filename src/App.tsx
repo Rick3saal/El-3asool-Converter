@@ -232,7 +232,7 @@ function OutputCard({
   return (
     <section className="glass glass-hover fade-up group relative overflow-hidden rounded-2xl">
       <div className="card-accent absolute inset-x-0 top-0 h-px opacity-70 transition-opacity duration-300 group-hover:opacity-100" />
-      <header className="flex items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-3.5">
+      <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-white/[0.07] px-5 py-3.5">
         <div className="flex items-center gap-2.5">
           <span
             className={cn(
@@ -680,7 +680,7 @@ export default function App() {
         <div className="absolute inset-x-0 bottom-0 h-80 bg-gradient-to-t from-[#05070d] to-transparent" />
       </div>
 
-      <main className="relative mx-auto w-full max-w-5xl px-4 pb-20 pt-9 sm:px-6">
+      <main className="relative mx-auto w-full max-w-7xl px-4 pb-20 pt-9 sm:px-6">
         {/* ============ header ============ */}
         <header className="text-center">
           {/* Arabic remembrance — framed, centered, RTL */}
@@ -731,8 +731,11 @@ export default function App() {
           </p>
         </header>
 
-        {/* ============ input card ============ */}
-        <section className="glass fade-up mt-9 rounded-2xl p-4 sm:p-5">
+        {/* ============ workspace: itinerary paste (left) + answer boxes (right) ============ */}
+        <div className="mt-9 grid items-start gap-5 lg:grid-cols-2 lg:gap-6">
+          <div className="min-w-0">
+            {/* ============ input card ============ */}
+            <section className="glass fade-up rounded-2xl p-4 sm:p-5">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h2 className="flex items-center gap-2 text-[11px] font-bold tracking-[0.25em] text-slate-300">
               <span className="text-honey/70">❯</span>
@@ -1027,10 +1030,12 @@ export default function App() {
             {infoIssue && <IssueRow issue={infoIssue} />}
           </div>
         )}
+          </div>
 
-        {/* ============ output ============ */}
+          {/* ============ output — answers beside the pasted itinerary ============ */}
+          <div className="min-w-0">
         {liveResult && liveResult.hasOutput ? (
-          <div className="mt-6 space-y-5">
+          <div className="space-y-5">
             <div className="flex flex-wrap items-center justify-center gap-2">
               <span className="inline-flex items-center gap-1.5 rounded-full border border-honey/25 bg-honey/[0.07] px-3 py-1 text-[10.5px] font-bold tracking-[0.12em] text-honey">
                 <span className="h-1.5 w-1.5 rounded-full bg-honey" />
@@ -1058,13 +1063,24 @@ export default function App() {
               learningOn={learningOn}
             />
 
-            <OutputCard
-              title="SABRE ITINERARY"
-              text={liveResult.itinerary}
-              emptyText="Paste an itinerary to build the main entry."
-              copied={copied === "itin"}
-              onCopy={() => void handleCopy("itin", liveResult.itinerary)}
-            />
+            {/* 1st row: SABRE ITINERARY (left) | INDIVIDUAL (right) */}
+            <div className="grid gap-5 md:grid-cols-2">
+              <OutputCard
+                title="SABRE ITINERARY"
+                text={liveResult.itinerary}
+                emptyText="Paste an itinerary to build the main entry."
+                copied={copied === "itin"}
+                onCopy={() => void handleCopy("itin", liveResult.itinerary)}
+              />
+              <OutputCard
+                title="INDIVIDUAL"
+                text={liveResult.individual}
+                emptyText="—"
+                copied={copied === "ind"}
+                onCopy={() => void handleCopy("ind", liveResult.individual)}
+              />
+            </div>
+            {/* OUTBOUND — one full line under the first row */}
             <OutputCard
               title="OUTBOUND"
               text={liveResult.outbound}
@@ -1072,19 +1088,13 @@ export default function App() {
               copied={copied === "out"}
               onCopy={() => void handleCopy("out", liveResult.outbound)}
             />
+            {/* INBOUND — one full line under the outbound */}
             <OutputCard
               title="INBOUND"
               text={liveResult.inbound}
               emptyText="No inbound flights."
               copied={copied === "in"}
               onCopy={() => void handleCopy("in", liveResult.inbound)}
-            />
-            <OutputCard
-              title="INDIVIDUAL"
-              text={liveResult.individual}
-              emptyText="—"
-              copied={copied === "ind"}
-              onCopy={() => void handleCopy("ind", liveResult.individual)}
             />
 
             {/* ---- self-learning manager ---- */}
@@ -1103,7 +1113,7 @@ export default function App() {
             />
           </div>
         ) : (
-          <div className="fade-up mt-6 rounded-2xl border border-dashed border-white/[0.09] bg-white/[0.015] px-6 py-16 text-center">
+          <div className="fade-up rounded-2xl border border-dashed border-white/[0.09] bg-white/[0.015] px-6 py-16 text-center">
             {text.trim() ? (
               <p className="text-sm text-slate-500">
                 Nothing convertible yet — check the notes above, or adjust the itinerary text.
@@ -1132,6 +1142,8 @@ export default function App() {
             )}
           </div>
         )}
+          </div>
+        </div>
 
         <footer className="mt-12 pb-4 text-center">
           <div className="gold-rule mx-auto mb-4 h-px w-40 opacity-50" />
