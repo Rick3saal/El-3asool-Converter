@@ -41,8 +41,16 @@ const DEFAULT_CLASS: Record<Cabin, string> = {
 };
 
 export function convertToSabre(rawText: string, fallbackCabin: Cabin | null): ConverterResult {
+  // An explicit booking class in the pasted source is authoritative. Do not
+  // short-circuit through learned itinerary memory in that case: old learned
+  // data may contain a previous AI mistake (for example AF 194 = I instead
+  // of the source's S). The deterministic parser below preserves the letter.
+  const hasExplicitBookingClass =
+    /\([A-Z]\)/i.test(rawText) ||
+    /\b(?:booking|fare|rbd|reservation)\s*class\s*[:：]?\s*[A-Z]\b/i.test(rawText);
+
   // 1. Check if this exact or template itinerary has been learned from AI
-  if (isLearningEnabled()) {
+  if (isLearningEnabled() && !hasExplicitBookingClass) {
     const learned = findLearnedItinerary(rawText);
     if (learned && learned.flights.length > 0) {
       const issues: Issue[] = [
