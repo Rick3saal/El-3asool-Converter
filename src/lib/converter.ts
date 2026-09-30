@@ -30,6 +30,8 @@ import {
   inferRouteEquipment,
   lookupKnownFlight,
 } from "./knownFlights";
+import { enforceConnectionDates } from "./dates";
+import { dateStr } from "./sabre";
 
 const DEFAULT_CLASS: Record<Cabin, string> = {
   FIRST: "I",
@@ -87,6 +89,23 @@ export function convertFlights(
     ordered.forEach((f, i) => {
       f.order = i;
       f.direction = i < out.length ? "OUT" : "IN";
+    });
+  }
+
+  // A connection can never depart before the flight it connects from lands:
+  // when a leg follows an overnight one, its date rolls to the next day even
+  // though the source printed the journey date only once.
+  for (const fix of enforceConnectionDates(ordered)) {
+    const f = fix.flight;
+    const p = fix.prev;
+    issues.push({
+      level: "info",
+      text:
+        `${f.airline} ${displayFlightNumber(f.number, f.airline)} (${f.origin} → ${f.dest}): ` +
+        `departure date corrected ${dateStr(fix.from.day, fix.from.month)} → ` +
+        `${dateStr(fix.to.day, fix.to.month)} — ` +
+        `${p.airline} ${displayFlightNumber(p.number, p.airline)} lands in ${p.dest} on ` +
+        `${dateStr(fix.landsOn.day, fix.landsOn.month)}.`,
     });
   }
 

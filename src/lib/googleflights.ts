@@ -27,6 +27,7 @@ import type { Cabin, ParsedDate, RawFlight } from "./types";
 import { airlineFromName, isAirlineCode } from "./airlines";
 import { parseExplicitAircraftString } from "./aircraft";
 import { cleanOperator } from "./operator";
+import { addDays, dateGapDays } from "./dates";
 
 /* ------------------------------------------------------------------ */
 /* small date helpers                                                  */
@@ -37,21 +38,6 @@ const MONTHS: Record<string, number> = {
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
 };
 const MON_NAME = "(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*";
-const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-
-/** add whole days to a day/month pair (same calendar model the parser uses) */
-function addDays(d: ParsedDate, n: number): ParsedDate {
-  let day = d.day;
-  let month = d.month;
-  for (let i = 0; i < n; i++) {
-    day += 1;
-    if (day > MONTH_DAYS[month - 1]) {
-      day = 1;
-      month = month === 12 ? 1 : month + 1;
-    }
-  }
-  return { day, month };
-}
 
 /* ------------------------------------------------------------------ */
 /* line classification                                                 */
@@ -75,6 +61,8 @@ interface GfLine {
   arrOff?: number;
   /** Explicit arrival calendar date printed on a time-range line. */
   arrivalDate?: ParsedDate;
+  /** DATE line that states when the leg LANDS ("Arrives Thu, Mar 18"). */
+  isArrival?: boolean;
   airportCode?: string;
   routeCodes?: string[];
   airline?: string;
@@ -102,6 +90,26 @@ function isLayoverLine(s: string): boolean {
   return /\blayover\b|\bchange\s+of\s+airports?\b|\bchange\s+planes\b|\bconnection\s+in\b|\bself[- ]transfer\b|\boverflight\b/i.test(
     s
   );
+}
+
+/**
+ * Connection time printed on a layover line — "2h 00m•Change planes in London
+ * (LHR)", "1 hr 30 min layover", "Layover in JFK (2h 11m)", "45 min layover".
+ * Used to date a connecting leg exactly when the card prints no date for it.
+ */
+function matchLayoverMinutes(s: string): number | undefined {
+  const hm = /(\d{1,2})\s*(?:h|hr|hrs|hour|hours)\b\s*(?:(\d{1,2})\s*(?:m|min|mins|minutes)?\b)?/i.exec(s);
+  if (hm) {
+    const h = parseInt(hm[1], 10);
+    const mm = hm[2] ? parseInt(hm[2], 10) : 0;
+    if (h <= 48 && mm <= 59) return h * 60 + mm;
+  }
+  const only = /(\d{1,3})\s*(?:m|min|mins|minutes)\b/i.exec(s);
+  if (only) {
+    const mm = parseInt(only[1], 10);
+    if (mm >= 5 && mm <= 1439) return mm;
+  }
+  return undefined;
 }
 
 
@@ -290,7 +298,7 @@ function classify(text: string, idx: number): GfLine {
   const op = matchOpbyLine(text);
   if (op) return { ...base, kind: "OPBY", operator: op };
 
-  if (isLayoverLine(text)) return { ...base, kind: "LAYOVER" };
+  if (isLayoverLine(text)) return { ...base, kind: "LAYOVER", minutes: matchLayoverMinutes(text) };
 
   const tr = matchTimeRangeLine(text);
   if (tr) return { ...base, kind: "TIMERANGE", ...tr };
@@ -305,7 +313,7 @@ function classify(text: string, idx: number): GfLine {
   if (rt) return { ...base, kind: "ROUTE", routeCodes: rt, date: matchDateLine(text) ?? undefined };
 
   const dt = matchDateLine(text);
-  if (dt) return { ...base, kind: "DATE", date: dt };
+  if (dt) return { ...base, kind: "DATE", date: dt, isArrival: /\barriv/i.test(text) };
 
   const fl = matchFlightLine(text);
   if (fl) return { ...base, kind: "FLIGHT", airline: fl.airline, number: fl.number, operator: fl.operator };
@@ -391,7 +399,7 @@ export function isGoogleFlightsStyleC(text: string): boolean {
   if (chrome === 1) return (times >= 2 || timeranges >= 1) && flights >= 1;
   // heading variant: at least one timerange + at least one flight + a date/route heading
   if (timeranges >= 1 && flights >= 1) {
-    const hasDate = lines.some((l) => l.kind === "DATE" && !/arriv/i.test(l.text));
+    const hasDate = lines.some((l) => l.kind === "DATE" && !l.isArrival);
     const hasRoute = lines.some((l) => l.kind === "ROUTE");
     if (hasDate || hasRoute) return true;
     // even without header, a pasted Style C with multiple legs and timeranges is recognisable
@@ -437,7 +445,7 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
   // (e.g. "BOM → MSP" / "Wed, Nov 11") is itinerary context, not a per-leg route
   const headerIdx = new Set<number>();
   for (let i = 0; i < lines.length - 1; i++) {
-    if (lines[i].kind === "ROUTE" && lines[i + 1].kind === "DATE" && !/arriv/i.test(lines[i + 1].text)) {
+    if (lines[i].kind === "ROUTE" && lines[i + 1].kind === "DATE" && !lines[i + 1].isArrival) {
       headerIdx.add(i);
     }
   }
@@ -445,6 +453,8 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
   const flights: RawFlight[] = [];
   let journeyDate: ParsedDate | undefined;
   let prevAnchor = -1;
+  /** when the previous leg lands — used to date a connection that prints no date */
+  let prevArrival: { date: ParsedDate; min: number } | undefined;
 
   for (let a = 0; a < anchors.length; a++) {
     const pos = anchors[a];
@@ -470,18 +480,37 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
     let duration: number | undefined = chosenTimerange?.minutes;
     let opbyIdx = -1;
     const pairs: Pair[] = [];
+    /** a departure date printed inside this leg's own block (heading or per-leg) */
+    let ownDate: ParsedDate | undefined;
+    /** "Arrives Thu, Mar 18" printed for this leg */
+    let arrivalDateLine: ParsedDate | undefined;
+    /** this leg follows a layover, i.e. it is a connection of the previous leg */
+    let afterLayover = false;
+    let layoverMin: number | undefined;
 
     for (let i = winStart; i < pos; i++) {
       const L = lines[i];
-      if (L.kind === "DATE" && !/arriv/i.test(L.text)) {
+      if (L.kind === "DATE" && L.isArrival) {
+        // an arrival date describes the leg whose clock is printed above it —
+        // one sitting before this leg's own clock belongs to the previous leg
+        const afterLegClock = chosenTimerange ? i > timerangeIdx : pairs.length > 0;
+        if (afterLegClock) arrivalDateLine = L.date;
+      } else if (L.kind === "DATE") {
         journeyDate = L.date;
+        ownDate = L.date;
+      } else if (L.kind === "LAYOVER") {
+        afterLayover = true;
+        layoverMin = L.minutes;
       } else if (L.kind === "TIME") {
         const nxt = lines[i + 1];
         const code = nxt && nxt.kind === "AIRPORT" && !nxt.layoverAirport ? nxt.airportCode : undefined;
         pairs.push({ min: L.min!, off: L.dayOffset ?? 0, code });
         if (code) i++;
       } else if (L.kind === "ROUTE" && !headerIdx.has(i)) {
-        if (L.date) journeyDate = L.date;
+        if (L.date) {
+          journeyDate = L.date;
+          ownDate = L.date;
+        }
         // Keep the last route before the flight. Journey headings, when present,
         // are followed by the leg's more specific route and are overwritten.
         routeCodes = L.routeCodes;
@@ -504,6 +533,11 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
     /* ---- trailing details printed under the flight number ---- */
     for (let i = pos + 1; i < nextAnchor; i++) {
       const L = lines[i];
+      // an arrival date under the flight still describes THIS leg
+      if (L.kind === "DATE" && L.isArrival) {
+        if (!arrivalDateLine) arrivalDateLine = L.date;
+        continue;
+      }
       if (startsNextLeg(L.kind)) break;
       if (L.kind === "CABIN") {
         if (!cabin) cabin = L.cabin;
@@ -588,13 +622,49 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
       dest = dest ?? routeCodes[routeCodes.length - 1];
     }
 
-    /* ---- date: journey header date shifted by this leg's "+N" marker ---- */
-    const date = journeyDate ? addDays(journeyDate, depOff) : undefined;
+    /* ---- date ----
+     * A card prints the journey date once ("LAX → BOM / Wed, Mar 17") and then
+     * only clock times per leg, so every leg after an overnight leg has to be
+     * dated from what the card DOES say about it, in this order:
+     *
+     *   1. a departure date printed inside this leg's own block;
+     *   2. the arrival date printed for this leg, stepped back over the leg's
+     *      own overnight offset — "3:05 pm - 5:40 am / Arrives Fri, Mar 19"
+     *      can only be a leg that departs Mar 18;
+     *   3. the previous leg's arrival, when this leg is its connection — the
+     *      printed layover time when there is one, otherwise the clocks;
+     *   4. the last date seen above (legacy behaviour).
+     */
+    const overnight = Math.max(
+      arrOff - depOff,
+      dep !== undefined && arr !== undefined && arr < dep ? 1 : 0,
+      0
+    );
+    const explicitArrival = chosenTimerange?.arrivalDate ?? arrivalDateLine;
+    let date: ParsedDate | undefined;
+    if (ownDate) {
+      date = addDays(ownDate, depOff);
+    } else if (explicitArrival) {
+      date = addDays(explicitArrival, -overnight);
+    } else if (afterLayover && prevArrival && dep !== undefined) {
+      let days: number;
+      if (layoverMin !== undefined && (prevArrival.min + layoverMin) % 1440 === dep) {
+        // the card printed the connection time: it dates the leg exactly,
+        // even for a layover that runs longer than a day
+        days = Math.floor((prevArrival.min + layoverMin) / 1440);
+      } else {
+        days = dep < prevArrival.min ? 1 : 0;
+      }
+      date = addDays(prevArrival.date, days);
+    } else if (journeyDate) {
+      date = addDays(journeyDate, depOff);
+    }
+
     let arrDay = arrOff - depOff;
-    if (chosenTimerange?.arrivalDate && journeyDate) {
-      const sameDate = chosenTimerange.arrivalDate.day === journeyDate.day &&
-        chosenTimerange.arrivalDate.month === journeyDate.month;
-      if (!sameDate) arrDay = 1;
+    if (explicitArrival && date) {
+      // the printed arrival date is measured against THIS leg's departure date
+      const gap = dateGapDays(date, explicitArrival);
+      if (gap !== null && gap >= 0 && gap <= 2) arrDay = gap;
     }
     if (arrDay < 0) arrDay = 0;
     if (arrDay === 0 && dep !== undefined && arr !== undefined && arr < dep) arrDay = 1;
@@ -617,6 +687,7 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
       origin,
       dest,
       date,
+      dateExplicit: !!ownDate,
       dep,
       arr,
       arrDay: arrDay as 0 | 1 | 2,
@@ -630,6 +701,7 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
       order: flights.length,
     });
 
+    prevArrival = date && arr !== undefined ? { date: addDays(date, arrDay), min: arr } : undefined;
     prevAnchor = pos;
   }
 

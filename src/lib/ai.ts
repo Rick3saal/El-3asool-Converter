@@ -213,6 +213,12 @@ Rules:
   ONE object using the true origin and final destination.
 - Times are 24-hour "HH:MM" LOCAL. If only 12-hour is shown, convert it.
 - arrivalDayOffset: 0 same day, 1 next day (+1), 2 two days later.
+- date is each flight's OWN DEPARTURE date. A card often prints one date for the
+  whole journey ("LAX → BOM / Wed, Mar 17") — after a leg that lands the next
+  day ("Arrives Thu, Mar 18"), the connecting flight departs on THAT later date
+  (Mar 18), not on the heading date. A connection can never depart before the
+  flight it connects from has landed. If the source prints an "Arrives <date>"
+  for a leg, date + arrivalDayOffset must equal that printed arrival date.
 - cabin is one of FIRST, BUSINESS, PREMIUM, ECONOMY. bookingClass is the single
   letter if the source states one (e.g. "Business (P)" -> "P"), else "".
 - operatedBy: the operator name exactly as printed if the source says
