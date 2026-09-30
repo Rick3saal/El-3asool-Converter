@@ -19,6 +19,9 @@ export interface RawFlight {
   origin?: string;
   dest?: string;
   date?: ParsedDate;
+  /** true when the source printed a departure date for THIS leg (not inherited
+   *  from a journey heading). A printed date is never second-guessed. */
+  dateExplicit?: boolean;
   /** departure minutes since midnight (local) */
   dep?: number;
   /** arrival minutes since midnight (local) */

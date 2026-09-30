@@ -13,6 +13,7 @@ import { lookupFlightKnowledge } from "./learning";
 import { lookupKnownFlight } from "./knownFlights";
 import { lookupCabinForClass } from "./cabinClasses";
 import { isGoogleFlightsStyleC, parseGoogleFlightsStyleC } from "./googleflights";
+import { dateGapDays } from "./dates";
 
 const MONTHS: Record<string, number> = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
@@ -530,6 +531,8 @@ interface Work {
   arrDayExplicit: boolean;
   /** arrival-day offset derived from a printed arrival date (e.g. "on Tue, Mar 16") */
   arrDayFromDate?: boolean;
+  /** the source printed a date inside THIS flight's own block */
+  dateExplicit?: boolean;
   cabin?: Cabin;
   bookingClass?: string;
   equip?: string;
@@ -546,35 +549,6 @@ interface Work {
    *  "Inbound", etc.) precedes this flight, that heading's intent is stored
    *  here so splitDirections can use it as the primary signal. */
   directionHint?: "OUT" | "IN";
-}
-
-const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-
-function doy(d: ParsedDate): number {
-  let s = 0;
-  for (let i = 0; i < d.month - 1; i++) s += MONTH_DAYS[i];
-  return s + d.day;
-}
-
-function dateGapDays(a: ParsedDate | undefined, b: ParsedDate | undefined): number | null {
-  if (!a || !b) return null;
-  let diff = doy(b) - doy(a);
-  // Circular year wrap: itineraries often cross Dec/Jan or span several months
-  // across a year boundary (e.g. Oct → Feb the next year). Take the forward gap
-  // in both directions and pick the one that represents a forward-moving trip.
-  // A forward gap of -244 days (Oct 28 → Feb 26) really means +121 days.
-  if (diff < 0) {
-    const wrapped = diff + 365;
-    // Use wrapped when it's the natural interpretation: b is after a across a
-    // year boundary. Keep small negative gaps (negative meaning same-day wrap
-    // such as date misorder) so they still look like small/negative gaps.
-    if (wrapped <= 185) diff = wrapped;
-  } else if (diff > 185) {
-    // More than ~6 months forward is almost certainly backwards across a year
-    // boundary; keep it as negative so it never looks like the "largest gap".
-    diff -= 365;
-  }
-  return diff;
 }
 
 function tokDist(t: Tok, core: Core): number {
@@ -1091,6 +1065,8 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
       }
       if (depTok) {
         w.date = { day: depTok.day!, month: depTok.month!, raw: depTok.raw };
+        // printed inside this flight's own block — authoritative
+        w.dateExplicit = true;
       }
       if (arrDateTok && w.date) {
         const diff = dateGapDays(w.date, { day: arrDateTok.day!, month: arrDateTok.month! });
@@ -1593,6 +1569,8 @@ export function parseItineraryText(rawText: string): ParseResult {
         origin: s.origin,
         dest: s.dest,
         date: { day: s.day, month: s.month },
+        // a Sabre block states the date on every segment line
+        dateExplicit: true,
         dep: s.dep,
         arr: s.arr,
         arrDay: s.arrDay,
@@ -1643,6 +1621,7 @@ export function parseItineraryText(rawText: string): ParseResult {
     origin: w.origin,
     dest: w.dest,
     date: w.date,
+    dateExplicit: w.dateExplicit,
     dep: w.dep,
     arr: w.arr,
     arrDay: w.arrDay,

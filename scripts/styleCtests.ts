@@ -14,6 +14,8 @@
  * Usage: npx tsx scripts/styleCtests.ts
  */
 import { convertToSabre } from "../src/lib/converter";
+import { enforceConnectionDates } from "../src/lib/dates";
+import type { RawFlight } from "../src/lib/types";
 import { parseItineraryText } from "../src/lib/parser";
 import { isGoogleFlightsStyleC, parseGoogleFlightsStyleC } from "../src/lib/googleflights";
 import { parseExplicitAircraftString, findAircraftTokens } from "../src/lib/aircraft";
@@ -523,6 +525,267 @@ Business`;
     globalThis.fetch = realFetch;
     check("no flights invented on failure", flights === null && err !== null);
   }
+}
+
+/* ================================================================== */
+/* OVERNIGHT CONNECTIONS — a leg can never depart before the previous  */
+/* one lands (card prints the journey date once, per-leg clocks only)  */
+/* ================================================================== */
+{
+  console.log("\n[Style C · dates] BA BOM-LAX round trip: LHR-BOM rolls to 18MAR");
+  const input = `Mumbai to Los Angeles
+
+Round-trip, 1 Traveler
+
+British Airways
+
+BOM → LAX
+
+Wed, Oct 21
+
+1 stop • 23h 10m
+
+9:30 am - 3:00 pm(10h 00m)
+
+Chhatrapati Shivaji Intl (BOM) - Heathrow (LHR)
+
+British Airways 134
+
+Business
+
+Wide-body jet
+
+Boeing 777
+
+1h 55m•Change planes in London (LHR)
+
+4:55 pm - 8:10 pm(11h 15m)
+
+Heathrow (LHR) - Los Angeles (LAX)
+
+British Airways 1609
+
+Business
+
+Operated by American Airlines
+
+Wide-body jet
+
+Boeing 777-300ER
+
+British Airways
+
+LAX → BOM
+
+Wed, Mar 17
+
+1 stop • 21h 45m
+
+7:25 pm - 1:05 pm(10h 40m)
+
+Arrives Thu, Mar 18
+
+Los Angeles (LAX) - Heathrow (LHR)
+
+Overnight flight
+
+British Airways 1509
+
+Business
+
+Operated by American Airlines
+
+Wide-body jet
+
+Boeing 787-9 Dreamliner
+
+2h 00m•Change planes in London (LHR)
+
+3:05 pm - 5:40 am(9h 05m)
+
+Arrives Fri, Mar 19
+
+Heathrow (LHR) - Chhatrapati Shivaji Intl (BOM)
+
+Overnight flight
+
+British Airways 135
+
+Business
+
+Wide-body jet
+
+Boeing 787-8 Dreamliner`;
+  const r = convert(input);
+  check(
+    "itinerary + additional",
+    r.itinerary ===
+      `1 BA 134 21OCT BOM LHR 930A 300P 777 10.00 0 N  CABIN-BUSINESS
+2 BA 1609 21OCT LHR LAX 455P 810P 77W 11.15 0 N  CABIN-BUSINESS
+*LHR-LAX OPERATED BY AMERICAN AIRLINES
+3 BA 1509 17MAR LAX LHR 725P 105P¥1 789 10.40 0 N  CABIN-BUSINESS
+*LAX-LHR OPERATED BY AMERICAN AIRLINES
+4 BA 135 18MAR LHR BOM 305P 540A¥1 788 9.05 0 N  CABIN-BUSINESS
+
+<--additional-->
+1 BA 134J 21OCT
+2 BA 1609J 21OCT
+3 BA 1509J 17MAR
+4 BA 135J 18MAR`,
+    r.itinerary
+  );
+  check("outbound chain", r.outbound === "0BA134J21OCTBOMLHRNN1§0BA1609J21OCTLHRLAXNN1", r.outbound);
+  check("return chain", r.inbound === "0BA1509J17MARLAXLHRNN1§0BA135J18MARLHRBOMNN1", r.inbound);
+  check(
+    "individual sells",
+    r.individual ===
+      `0BA134J21OCTBOMLHRGK1
+0BA1609J21OCTLHRLAXGK1
+0BA1509J17MARLAXLHRGK1
+0BA135J18MARLHRBOMGK1`,
+    r.individual
+  );
+  check("same-day connection untouched (21OCT)", !/BA 1609 22OCT/.test(r.itinerary), r.itinerary);
+}
+
+{
+  console.log("\n[Style C · dates] connection dated from the printed layover time");
+  // No per-leg dates and no 'Arrives' line: the connection is dated from the
+  // previous leg's landing, which is the next day after a red-eye.
+  const input = `Departing flight Wed, Mar 17
+
+LAX → BOM
+
+7:25 pm - 1:05 pm(10h 40m)
+
+Los Angeles (LAX) - Heathrow (LHR)
+
+British Airways 1509
+
+Business
+
+Boeing 787-9 Dreamliner
+
+2h 00m•Change planes in London (LHR)
+
+3:05 pm - 5:40 am(9h 05m)
+
+Heathrow (LHR) - Chhatrapati Shivaji Intl (BOM)
+
+British Airways 135
+
+Business
+
+Boeing 787-8 Dreamliner`;
+  const r = convert(input);
+  check("red-eye keeps its own date", r.itinerary.includes("BA 1509 17MAR LAX LHR 725P 105P¥1"), r.itinerary);
+  check("connection rolls to 18MAR", r.itinerary.includes("BA 135 18MAR LHR BOM 305P 540A¥1"), r.itinerary);
+}
+
+{
+  console.log("\n[Style C · dates] 26-hour layover dated from the printed connection time");
+  const input = `Departing flight Wed, Mar 17
+
+LAX → BOM
+
+7:25 pm - 1:05 pm(10h 40m)
+
+Los Angeles (LAX) - Heathrow (LHR)
+
+British Airways 1509
+
+Business
+
+Boeing 787-9 Dreamliner
+
+26h 00m•Change planes in London (LHR)
+
+3:05 pm - 5:40 am(9h 05m)
+
+Heathrow (LHR) - Chhatrapati Shivaji Intl (BOM)
+
+British Airways 135
+
+Business
+
+Boeing 787-8 Dreamliner`;
+  const r = convert(input);
+  check("overnight stopover rolls two days", r.itinerary.includes("BA 135 19MAR LHR BOM 305P 540A¥1"), r.itinerary);
+}
+
+{
+  console.log("\n[Style C · dates] a printed per-leg date is never overridden");
+  // HND → YYZ crosses the date line and lands the same calendar day, so the
+  // connection printed for Feb 27 must stay on Feb 27.
+  const input = `Tokyo (HND) → Toronto (YYZ)
+Thu, Feb 27
+Air Canada 2
+Boeing 777
+Departure 6:50 PM · Arrival 4:55 PM
+Premium Economy (A)
+Duration: 12 hr 5 min
+
+Toronto (YYZ) → Charlotte (CLT)
+Thu, Feb 27
+Air Canada 8749
+Embraer 175
+Departure 6:55 PM · Arrival 9:06 PM
+Economy (G)
+Duration: 2 hr 11 min`;
+  const r = convert(input);
+  check("printed 27FEB kept", r.itinerary.includes("AC 8749 27FEB YYZ CLT 655P 906P"), r.itinerary);
+}
+
+{
+  console.log("\n[Style C · dates] enforceConnectionDates unit rules");
+  const leg = (over: Partial<RawFlight>): RawFlight => ({
+    airline: "BA",
+    number: "1",
+    origin: "AAA",
+    dest: "BBB",
+    date: { day: 17, month: 3 },
+    dep: 600,
+    arr: 900,
+    arrDay: 0,
+    order: 0,
+    direction: "OUT",
+    ...over,
+  });
+
+  const chain = [
+    leg({ number: "1509", origin: "LAX", dest: "LHR", dep: 1165, arr: 785, arrDay: 1 }),
+    leg({ number: "135", origin: "LHR", dest: "BOM", dep: 905, arr: 340, arrDay: 1, order: 1 }),
+  ];
+  const fixes = enforceConnectionDates(chain);
+  check("impossible connection rolled forward", chain[1].date!.day === 18 && fixes.length === 1, JSON.stringify(chain[1].date));
+  check("reports the leg it connects from", fixes[0]?.prev.number === "1509" && fixes[0]?.landsOn.day === 18, JSON.stringify(fixes[0]?.landsOn));
+
+  const explicit = [
+    leg({ number: "2", origin: "HND", dest: "YYZ", dep: 1130, arr: 1015, arrDay: 1 }),
+    leg({ number: "8749", origin: "YYZ", dest: "CLT", dep: 1135, arr: 1266, order: 1, dateExplicit: true }),
+  ];
+  enforceConnectionDates(explicit);
+  check("printed date left alone", explicit[1].date!.day === 17, JSON.stringify(explicit[1].date));
+
+  const separate = [
+    leg({ number: "1509", origin: "LAX", dest: "LHR", dep: 1165, arr: 785, arrDay: 1 }),
+    leg({ number: "135", origin: "LHR", dest: "BOM", dep: 905, arr: 340, arrDay: 1, order: 1, direction: "IN" }),
+  ];
+  enforceConnectionDates(separate);
+  check("never chains across outbound/return", separate[1].date!.day === 17, JSON.stringify(separate[1].date));
+
+  const notConnected = [
+    leg({ number: "1509", origin: "LAX", dest: "LHR", dep: 1165, arr: 785, arrDay: 1 }),
+    leg({ number: "135", origin: "CDG", dest: "BOM", dep: 905, arr: 340, arrDay: 1, order: 1 }),
+  ];
+  enforceConnectionDates(notConnected);
+  check("never chains when it is not a connection", notConnected[1].date!.day === 17, JSON.stringify(notConnected[1].date));
+
+  const fine = [
+    leg({ number: "134", origin: "BOM", dest: "LHR", dep: 570, arr: 900 }),
+    leg({ number: "1609", origin: "LHR", dest: "LAX", dep: 1015, arr: 1210, order: 1 }),
+  ];
+  check("valid connection untouched", enforceConnectionDates(fine).length === 0 && fine[1].date!.day === 17);
 }
 
 console.log(`\n==== ${pass} passed, ${fail} failed ====`);
