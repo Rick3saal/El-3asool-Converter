@@ -73,6 +73,8 @@ interface GfLine {
   arr?: number;
   depOff?: number;
   arrOff?: number;
+  /** Explicit arrival calendar date printed on a time-range line. */
+  arrivalDate?: ParsedDate;
   airportCode?: string;
   routeCodes?: string[];
   airline?: string;
@@ -127,11 +129,11 @@ function matchTimeLine(s: string): { min: number; dayOffset: number } | null {
  *  Separator is dash (–, —, -). Arrow "→" is NOT a time-range separator here so that
  *  Matrix style "10:40 AM → 1:50 PM" does not become a Style-C timerange.
  */
-function matchTimeRangeLine(s: string): { dep: number; arr: number; depOff: number; arrOff: number } | null {
+function matchTimeRangeLine(s: string): { dep: number; arr: number; depOff: number; arrOff: number; arrivalDate?: ParsedDate; minutes?: number } | null {
   const t = s.trim();
-  // strict time-range line: two clocks separated by dash
-  // each clock: H:MM [AM/PM] [+N]
-  const re = /^(\d{1,2}):(\d{2})\s*([AaPp]\.?[ \t]*[Mm]\.?)?\s*(?:\+\s*(\d))?\s*[-–—]\s*(\d{1,2}):(\d{2})\s*([AaPp]\.?[ \t]*[Mm]\.?)?\s*(?:\+\s*(\d))?\s*$/;
+  // Two clocks separated by a dash, or by "to" in copied itinerary cards.
+  // The latter can include an arrival date and duration after the second clock.
+  const re = /^(\d{1,2}):(\d{2})\s*([AaPp]\.?[ \t]*[Mm]\.?)?\s*(?:\+\s*(\d))?\s*(?:[-–—]|\bto\b)\s*(\d{1,2}):(\d{2})\s*([AaPp]\.?[ \t]*[Mm]\.?)?\s*(?:\+\s*(\d))?(?:\s+on\s+.+?)?(?:\s*\(\d{1,2}\s*h(?:\s*\d{1,2}\s*m)?\))?\s*$/i;
   const m = re.exec(t);
   if (!m) return null;
   const h1 = parseInt(m[1], 10);
@@ -162,7 +164,13 @@ function matchTimeRangeLine(s: string): { dep: number; arr: number; depOff: numb
   }
   const depOff = off1 === 1 || off1 === 2 ? off1 : 0;
   const arrOff = off2 === 1 || off2 === 2 ? off2 : 0;
-  return { dep, arr, depOff, arrOff };
+  const arrivalPart = /\s+on\s+(.+?)(?:\s*\(|$)/i.exec(t);
+  const arrivalDate = arrivalPart ? matchDateLine(arrivalPart[1]) ?? undefined : undefined;
+  const durationPart = /\((\d{1,2})\s*h(?:\s*(\d{1,2})\s*m)?\)\s*$/i.exec(t);
+  const minutes = durationPart
+    ? parseInt(durationPart[1], 10) * 60 + parseInt(durationPart[2] || "0", 10)
+    : undefined;
+  return { dep, arr, depOff, arrOff, arrivalDate, minutes };
 }
 
 function matchDateLine(s: string): ParsedDate | null {
@@ -181,23 +189,25 @@ function matchDateLine(s: string): ParsedDate | null {
   return null;
 }
 
-function matchFlightLine(s: string): { airline: string; number: string } | null {
-  const t = s.replace(/\s+/g, " ").trim();
+function matchFlightLine(s: string): { airline: string; number: string; operator?: string } | null {
+  const inlineOp = /\s*\(\s*operated\s+by\s+(.+?)\s*\)\s*$/i.exec(s);
+  const operator = inlineOp ? cleanOperator(inlineOp[1]) || undefined : undefined;
+  const t = (inlineOp ? s.slice(0, inlineOp.index) : s).replace(/\s+/g, " ").trim();
   // "4Y 81", "LH 2306", "BA 6597" — a space keeps "A330" from ever reading as A3/330
   let m = /^([A-Z0-9]{2})\s+(\d{1,4})$/.exec(t);
   if (m && /[A-Z]/.test(m[1]) && isAirlineCode(m[1])) {
-    return { airline: m[1], number: String(parseInt(m[2], 10)) };
+    return { airline: m[1], number: String(parseInt(m[2], 10)), operator };
   }
   // glued "LH2306" — only when the line is definitely not an aircraft type
   m = /^([A-Z]{2})(\d{2,4})$/.exec(t);
   if (m && isAirlineCode(m[1]) && parseExplicitAircraftString(t) === null) {
-    return { airline: m[1], number: String(parseInt(m[2], 10)) };
+    return { airline: m[1], number: String(parseInt(m[2], 10)), operator };
   }
   // "British Airways 6597", "Akasa Air 585", "Etihad 10"
   m = /^([A-Za-z][A-Za-z .'&\u2019-]{1,40}?)\s*[-\u2013]?\s*(\d{1,4})$/.exec(t);
   if (m) {
     const code = airlineFromName(m[1]);
-    if (code) return { airline: code, number: String(parseInt(m[2], 10)) };
+    if (code) return { airline: code, number: String(parseInt(m[2], 10)), operator };
   }
   return null;
 }
@@ -227,7 +237,9 @@ function matchAirportLine(s: string): string | null {
 }
 
 function matchRouteLine(s: string): string[] | null {
-  const parts = s
+  // Copied cards commonly append "on Tue, May 11" and warning-icon text.
+  const routeText = s.replace(/\s+on\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b.*$/i, "").trim();
+  const parts = routeText
     .split(/\s*(?:\u2192|->|\u21d2|\u279c|\bto\b|\u2013|\u2014|-)\s*/i)
     .map((p) => p.trim())
     .filter(Boolean);
@@ -281,24 +293,27 @@ function classify(text: string, idx: number): GfLine {
   if (isLayoverLine(text)) return { ...base, kind: "LAYOVER" };
 
   const tr = matchTimeRangeLine(text);
-  if (tr) return { ...base, kind: "TIMERANGE", dep: tr.dep, arr: tr.arr, depOff: tr.depOff, arrOff: tr.arrOff };
+  if (tr) return { ...base, kind: "TIMERANGE", ...tr };
 
   const tm = matchTimeLine(text);
   if (tm) return { ...base, kind: "TIME", min: tm.min, dayOffset: tm.dayOffset };
+
+  // A route heading may contain its own date ("JFK to HKG on Tue, May 11").
+  // Keep both pieces on one token rather than allowing DATE classification to
+  // hide the route endpoints.
+  const rt = matchRouteLine(text);
+  if (rt) return { ...base, kind: "ROUTE", routeCodes: rt, date: matchDateLine(text) ?? undefined };
 
   const dt = matchDateLine(text);
   if (dt) return { ...base, kind: "DATE", date: dt };
 
   const fl = matchFlightLine(text);
-  if (fl) return { ...base, kind: "FLIGHT", airline: fl.airline, number: fl.number };
+  if (fl) return { ...base, kind: "FLIGHT", airline: fl.airline, number: fl.number, operator: fl.operator };
 
   if (looksLikeUnknownFlightLine(text)) return { ...base, kind: "UNKNOWN_FLIGHT" };
 
   const ap = matchAirportLine(text);
   if (ap) return { ...base, kind: "AIRPORT", airportCode: ap };
-
-  const rt = matchRouteLine(text);
-  if (rt) return { ...base, kind: "ROUTE", routeCodes: rt };
 
   const du = matchDurationLine(text);
   if (du !== null) return { ...base, kind: "DURATION", minutes: du };
@@ -452,7 +467,7 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
     let cabin: Cabin | undefined;
     let bookingClass: string | undefined;
     let equipRaw: string | undefined;
-    let duration: number | undefined;
+    let duration: number | undefined = chosenTimerange?.minutes;
     let opbyIdx = -1;
     const pairs: Pair[] = [];
 
@@ -466,9 +481,9 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
         pairs.push({ min: L.min!, off: L.dayOffset ?? 0, code });
         if (code) i++;
       } else if (L.kind === "ROUTE" && !headerIdx.has(i)) {
-        // keep the last non-header route before the flight; if a timerange exists,
-        // only a route after the timerange belongs to this leg (heading is before)
-        if (chosenTimerange && i < timerangeIdx) continue;
+        if (L.date) journeyDate = L.date;
+        // Keep the last route before the flight. Journey headings, when present,
+        // are followed by the leg's more specific route and are overwritten.
         routeCodes = L.routeCodes;
       } else if (L.kind === "CABIN") {
         if (chosenTimerange && i < timerangeIdx) continue; // previous leg's cabin
@@ -576,12 +591,17 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
     /* ---- date: journey header date shifted by this leg's "+N" marker ---- */
     const date = journeyDate ? addDays(journeyDate, depOff) : undefined;
     let arrDay = arrOff - depOff;
+    if (chosenTimerange?.arrivalDate && journeyDate) {
+      const sameDate = chosenTimerange.arrivalDate.day === journeyDate.day &&
+        chosenTimerange.arrivalDate.month === journeyDate.month;
+      if (!sameDate) arrDay = 1;
+    }
     if (arrDay < 0) arrDay = 0;
     if (arrDay === 0 && dep !== undefined && arr !== undefined && arr < dep) arrDay = 1;
     if (arrDay > 2) arrDay = 2;
 
     /* ---- operated by: ONLY when explicitly printed for this flight ---- */
-    let operatedBy: string | undefined;
+    let operatedBy: string | undefined = anchor.operator;
     if (opbyIdx >= 0) {
       operatedBy = lines[opbyIdx].operator;
       lines[opbyIdx].used = true;
