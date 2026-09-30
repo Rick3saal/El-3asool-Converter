@@ -3,7 +3,7 @@
  * Both TEXT and IMAGE (OCR) flows converge here — one conversion path,
  * one formatter, one validator.
  */
-import { Cabin, ConverterResult, Issue, RawFlight, Segment, UnknownClassQuestion } from "./types";
+import { Cabin, ConverterResult, Issue, RawFlight, Segment, SourceStated, UnknownClassQuestion } from "./types";
 import { parseItineraryText, splitDirections } from "./parser";
 import {
   additionalLine,
@@ -141,6 +141,16 @@ export function convertFlights(
     let cabin: Cabin;
     let bookingClass: string;
 
+    // Everything the SOURCE stated itself is protected from learned/AI memory.
+    const sourceStated: SourceStated = {
+      bookingClass: !!(f.bookingClass && /^[A-Z]$/i.test(f.bookingClass)),
+      // A stated cabin name, or a stated class letter (whose cabin is derived
+      // from that letter) — either way the source decides the cabin.
+      cabin: !!f.cabin || !!(f.bookingClass && /^[A-Z]$/i.test(f.bookingClass)),
+      operatedBy: !!f.operatedBy,
+      elapsed: !!f.elapsedExplicit,
+    };
+
     if (f.bookingClass && /^[A-Z]$/i.test(f.bookingClass)) {
       const letter = f.bookingClass.toUpperCase();
       bookingClass = letter; // keep exactly as given
@@ -195,6 +205,7 @@ export function convertFlights(
     const directEquip = (f.equip && f.equip !== "---")
       ? f.equip
       : (f.equipRaw ? parseExplicitAircraftString(f.equipRaw, f.airline) : null);
+    if (directEquip && directEquip !== "---") sourceStated.equip = true;
     let learnedEquip = !directEquip ? lookupLearnedAircraft(f.equipRaw) : undefined;
     let equip = directEquip || learnedEquip;
     if (!equip || equip === "---") {
@@ -236,6 +247,7 @@ export function convertFlights(
       hasStarFlag: f.hasStarFlag,
       operatedBy,
       direction: f.direction ?? "OUT",
+      sourceStated,
     });
   }
 

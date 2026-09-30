@@ -76,6 +76,21 @@ export interface Segment {
   hasStarFlag?: boolean;
   operatedBy?: string;
   direction: Direction;
+  /**
+   * Fields the pasted SOURCE stated explicitly. Learned/AI memory must never
+   * overwrite these: the text in front of the user always wins over anything
+   * remembered from an earlier (possibly wrong) AI read.
+   */
+  sourceStated?: SourceStated;
+}
+
+/** Which segment fields were taken verbatim from the pasted itinerary. */
+export interface SourceStated {
+  cabin?: boolean;
+  bookingClass?: boolean;
+  equip?: boolean;
+  operatedBy?: boolean;
+  elapsed?: boolean;
 }
 
 export type IssueLevel = "error" | "warn" | "info";

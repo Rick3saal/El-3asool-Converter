@@ -803,7 +803,7 @@ export default function App() {
         setResult(next);
         if (learningOn) {
           // learnFlight skips segments whose equipment is still "---" — safe.
-          changedSegs.forEach((s) => learnFlight(s));
+          changedSegs.forEach((s) => learnFlight(s, { source: "ai" }));
           // Remember resolved class letters so the next conversion of any
           // flight with that airline + letter resolves offline.
           const seen = new Set<string>();
@@ -944,7 +944,9 @@ export default function App() {
         // Auto-learn when learning is enabled so the user never needs AI again for this flight!
         if (learningOn) {
           learnItinerary(rawText, flights);
-          out.segments.forEach((seg) => learnFlight(seg));
+          // AI-read flights: remember routing/aircraft, but never let a model's
+          // cabin/booking-class guess override a future pasted itinerary.
+          out.segments.forEach((seg) => learnFlight(seg, { source: "ai" }));
           setLearnedVersion((v) => v + 1);
           setAiNote(
             `🧠 AI read ${flights.length} flight${flights.length > 1 ? "s" : ""} and saved to memory! Future conversions of this itinerary will work automatically without AI.`
