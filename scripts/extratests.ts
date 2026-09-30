@@ -885,5 +885,50 @@ Economy (Y) `;
   check("AI: '330' string -> 330", flex[1].elapsed === 330, String(flex[1].elapsed));
 }
 
+/* ====== REGRESSION: explicit booking letters in "time to time" cards are immutable ====== */
+{
+  console.log("\n[Regression] preserve every explicit class in dated time-range cards");
+  const input = `Detroit (DTW) to Kathmandu (KTM) on Tue, May 11 Warning IconWarning Icon
+Detroit (DTW) to New York (JFK) on Tue, May 11
+6:00 AM to 7:49 AM (1h 49m)
+JetBlue 720
+Airbus A320
+Economy (O)
+Layover in JFK (2h 11m)
+New York (JFK) to Hong Kong (HKG) on Tue, May 11
+10:00 AM to 1:55 PM on Wed, May 12 (15h 55m)
+Cathay Pacific 841
+Airbus A350
+Business (P)
+Layover in HKG (5h 0m)
+Hong Kong (HKG) to Kathmandu (KTM) on Wed, May 12
+6:55 PM to 9:45 PM (5h 5m)
+Cathay Pacific 603
+Airbus A330
+Business (P)
+Kathmandu (KTM) to Detroit (DTW) on Tue, May 25 Warning Icon
+Kathmandu (KTM) to Hong Kong (HKG) on Tue, May 25
+11:00 PM to 6:00 AM on Wed, May 26 (4h 45m)
+Cathay Pacific 640
+Airbus A330
+Business (I)
+Layover in HKG (6h 10m)
+Hong Kong (HKG) to Chicago (ORD) on Wed, May 26
+12:10 PM to 1:55 PM (14h 45m)
+Cathay Pacific 806
+Airbus A350
+Business (I)
+Layover in ORD (3h 54m)
+Chicago (ORD) to Detroit (DTW) on Wed, May 26
+5:49 PM to 8:25 PM (1h 36m)
+Cathay Pacific 7575 (operated by Envoy Air As American Eagle For American Airlines)
+Embraer 170
+Business (I)`;
+  const r = convert(input);
+  check("all six card legs retained", r.segments.length === 6, `got ${r.segments.length}`);
+  check("explicit O/P/P/I/I/I classes preserved", r.segments.map(s => s.bookingClass).join("") === "OPPIII", r.segments.map(s => s.bookingClass).join(""));
+  check("card durations retained", r.itinerary.includes("CX 603 12MAY HKG KTM 655P 945P 330 5.05") && r.itinerary.includes("CX 640 25MAY KTM HKG 1100P 600A¥1 330 4.45"), r.itinerary);
+}
+
 console.log(`\n==== ${pass} passed, ${fail} failed ====`);
 process.exit(fail ? 1 : 0);
