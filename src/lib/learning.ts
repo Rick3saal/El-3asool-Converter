@@ -37,6 +37,8 @@ export interface FlightCorrection {
   elapsed: number;
   cabin: Cabin;
   bookingClass: string;
+  /** true when this record came from an AI read rather than a human edit */
+  cabinFromAi?: boolean;
   operatedBy?: string;
   direction: Direction;
   arrDay: 0 | 1 | 2;
@@ -250,11 +252,23 @@ export function canSaveItinerary(flights: (RawFlight | Segment)[]): boolean {
   return true;
 }
 
+export interface LearnFlightOptions {
+  /**
+   * Where the values came from. "ai" = extracted/guessed by a model, so the
+   * cabin and booking class are NOT persisted as overrides and the rest only
+   * fills gaps. "user" (default) = an explicit human edit, authoritative.
+   */
+  source?: "user" | "ai";
+}
+
 /** Learn one user-edited flight (full structural snapshot of the edit). */
-export function learnFlight(seg: Segment): void {
+export function learnFlight(seg: Segment, opts: LearnFlightOptions = {}): void {
   // Never save or cache a result that contains "---" or a missing operator for a star flight
   if (!seg.equip || seg.equip === "---") return;
   if (seg.hasStarFlag && !seg.operatedBy) return;
+
+  const fromAi = opts.source === "ai";
+  const prev = flightMap().get(flightKey(seg.airline, seg.num, seg.origin, seg.dest));
 
   const corr: FlightCorrection = {
     airline: seg.airline,
@@ -265,8 +279,11 @@ export function learnFlight(seg: Segment): void {
     numOverride: seg.num,
     equip: seg.equip,
     elapsed: Math.round(seg.elapsed),
-    cabin: seg.cabin,
-    bookingClass: seg.bookingClass,
+    // An AI-derived cabin/class is kept for display only and never clobbers a
+    // value a human taught earlier.
+    cabin: fromAi ? prev?.cabin ?? seg.cabin : seg.cabin,
+    bookingClass: fromAi ? prev?.bookingClass ?? seg.bookingClass : seg.bookingClass,
+    cabinFromAi: fromAi ? prev?.cabinFromAi ?? true : false,
     operatedBy: seg.operatedBy,
     direction: seg.direction,
     arrDay: seg.arrDay,
@@ -548,16 +565,31 @@ export function applyLearned(segments: Segment[]): Segment[] {
   return segments.map((s) => {
     const corr = map.get(flightKey(s.airline, s.num, s.origin, s.dest));
     if (!corr) return s;
+    // Provenance decides who wins:
+    //  - a HUMAN correction is authoritative and overrides everything (that is
+    //    the point of editing a result and teaching the tool);
+    //  - an AI-derived memory only FILLS GAPS: it never overwrites a field the
+    //    pasted itinerary stated itself. Otherwise one wrong AI read (AF 194
+    //    stored as I / BUSINESS / 359) keeps corrupting every later conversion
+    //    of a text that clearly says "Premium Economy (S)" / "Boeing 787".
+    const fromAi = corr.cabinFromAi === true;
+    const stated = s.sourceStated ?? {};
+    const aiBlocked = (field: "equip" | "elapsed" | "operatedBy") =>
+      fromAi && stated[field] === true;
     return {
       ...s,
       airline: corr.airlineOverride || s.airline,
       num: corr.numOverride || s.num,
       // User's explicitly edited flight correction takes priority if set; never overwrite with "---"
-      equip: (corr.equip && corr.equip !== "---") ? corr.equip : s.equip,
-      elapsed: typeof corr.elapsed === "number" ? corr.elapsed : s.elapsed,
-      cabin: corr.cabin || s.cabin,
-      bookingClass: corr.bookingClass || s.bookingClass,
-      operatedBy: corr.operatedBy ?? s.operatedBy,
+      equip: !aiBlocked("equip") && corr.equip && corr.equip !== "---" ? corr.equip : s.equip,
+      elapsed: !aiBlocked("elapsed") && typeof corr.elapsed === "number" ? corr.elapsed : s.elapsed,
+      // Cabin / booking class: a class letter printed in the source ALWAYS wins,
+      // and an AI-derived record never supplies them at all.
+      cabin: !stated.cabin && !fromAi && corr.cabin ? corr.cabin : s.cabin,
+      bookingClass:
+        !stated.bookingClass && !fromAi && corr.bookingClass ? corr.bookingClass : s.bookingClass,
+      operatedBy:
+        !aiBlocked("operatedBy") && corr.operatedBy !== undefined ? corr.operatedBy : s.operatedBy,
       direction: corr.direction || s.direction,
       arrDay: corr.arrDay ?? s.arrDay,
     };

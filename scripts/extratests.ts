@@ -630,9 +630,13 @@ OPERATED BY: SINGAPORE AIRLINES`;
   // 3. Convert without AI (AI off / closed)
   const convertedDirect = convert(novelText);
   check("converted 2 segments without AI", convertedDirect.segments.length === 2, `got ${convertedDirect.segments.length}`);
+  // The memory shortcut is deliberately skipped when the pasted text states its
+  // own booking-class letters (the source is authoritative) — in that case the
+  // deterministic parser must produce the identical result with no error issues.
   check(
-    "recognised from AI-learned memory info note",
-    convertedDirect.issues.some((i) => i.text.includes("Recognized from AI-learned memory")),
+    "learned itinerary reproduced (memory note, or clean local parse)",
+    convertedDirect.issues.some((i) => i.text.includes("Recognized from AI-learned memory")) ||
+      !convertedDirect.issues.some((i) => i.level === "error"),
     JSON.stringify(convertedDirect.issues)
   );
   check(
@@ -928,6 +932,117 @@ Business (I)`;
   check("all six card legs retained", r.segments.length === 6, `got ${r.segments.length}`);
   check("explicit O/P/P/I/I/I classes preserved", r.segments.map(s => s.bookingClass).join("") === "OPPIII", r.segments.map(s => s.bookingClass).join(""));
   check("card durations retained", r.itinerary.includes("CX 603 12MAY HKG KTM 655P 945P 330 5.05") && r.itinerary.includes("CX 640 25MAY KTM HKG 1100P 600A¥1 330 4.45"), r.itinerary);
+}
+
+/* ====== REGRESSION: stale AI-learned cabin must not override the source ======
+ * Bug: a previous AI read stored AF 194 CDG-BLR as class I / BUSINESS / 359.
+ * Every later conversion of a text that clearly says "Premium Economy (S)" /
+ * "Boeing 787" came back as CABIN-BUSINESS + 0AF194I... The source must win. */
+{
+  console.log("\n[Regression] learned AF 194 = I/BUSINESS must not beat source S/PREMIUM");
+  const { learnFlight, clearLearned } = await import("../src/lib/learning");
+  clearLearned();
+  const input = `Atlanta (ATL) to Chennai (MAA) on Mon, Dec 21
+Atlanta (ATL) to Paris (CDG) on Mon, Dec 21
+8:15 PM to 10:35 AM (8h 20m)
+Air France 33
+Boeing 777
+Premium Economy (S)
+Layover in CDG (2h 0m)
+Paris (CDG) to Bengaluru (BLR) on Tue, Dec 22
+12:35 PM to 2:50 AM (9h 45m)
+Air France 194
+Boeing 787
+Premium Economy (S)
+Layover in BLR (4h 20m)
+Bengaluru (BLR) to Chennai (MAA) on Wed, Dec 23
+7:10 AM to 8:15 AM (1h 5m)
+Air France 3780 (operated by Indigo)
+Airbus A321neo
+Economy (T)
+Chennai (MAA) to Atlanta (ATL) on Tue, Jan 12
+Chennai (MAA) to Mumbai (BOM) on Tue, Jan 12
+11:15 PM to 1:20 AM (2h 5m)
+Air France 3791 (operated by Indigo)
+Airbus A321neo
+Economy (T)
+Layover in BOM (3h 50m)
+Mumbai (BOM) to Paris (CDG) on Wed, Jan 13
+5:10 AM to 10:50 AM (10h 10m)
+Air France 207
+Boeing 777
+Premium Economy (S)
+Layover in CDG (3h 0m)
+Paris (CDG) to Atlanta (ATL) on Wed, Jan 13
+1:50 PM to 5:40 PM on Wed, Jan 13 (9h 50m)
+Air France 32
+Boeing 777
+Premium Economy (S)`;
+
+  const expectedItin = `1 AF 33 21DEC ATL CDG 815P 1035A\u00a51 777 8.20 0 N  CABIN-PREMIUM
+2 AF 194 22DEC CDG BLR 1235P 250A\u00a51 787 9.45 0 N  CABIN-PREMIUM
+3 AF 3780 23DEC BLR MAA 710A 815A 32N 1.05 0 N  CABIN-ECONOMY
+*BLR-MAA OPERATED BY INDIGO
+4 AF 3791 12JAN MAA BOM 1115P 120A\u00a51 32N 2.05 0 N  CABIN-ECONOMY
+*MAA-BOM OPERATED BY INDIGO
+5 AF 207 13JAN BOM CDG 510A 1050A 777 10.10 0 N  CABIN-PREMIUM
+6 AF 32 13JAN CDG ATL 150P 540P 777 9.50 0 N  CABIN-PREMIUM
+
+<--additional-->
+1 AF 33S 21DEC
+2 AF 194S 22DEC
+3 AF 3780T 23DEC
+4 AF 3791T 12JAN
+5 AF 207S 13JAN
+6 AF 32S 13JAN`;
+
+  const clean = convert(input);
+  check("clean memory: itinerary correct", clean.itinerary === expectedItin, clean.itinerary);
+
+  // poison the memory exactly the way an earlier AI read did
+  learnFlight({
+    airline: "AF", num: "194", date: { day: 22, month: 12 }, origin: "CDG", dest: "BLR",
+    dep: 755, arr: 170, arrDay: 1, equip: "359", elapsed: 585,
+    cabin: "BUSINESS", bookingClass: "I", direction: "OUT",
+  } as never, { source: "ai" });
+
+  const r = convert(input);
+  check("source S/PREMIUM survives stale AI memory", r.itinerary === expectedItin, r.itinerary);
+  check("AF 194 class stays S", r.segments[1].bookingClass === "S", r.segments[1].bookingClass);
+  check("AF 194 cabin stays PREMIUM", r.segments[1].cabin === "PREMIUM", r.segments[1].cabin);
+  check("AF 194 equipment stays 787 (source)", r.segments[1].equip === "787", r.segments[1].equip);
+  check(
+    "outbound chain uses 194S",
+    r.outbound === "0AF33S21DECATLCDGNN1\u00a70AF194S22DECCDGBLRNN1\u00a70AF3780T23DECBLRMAANN1",
+    r.outbound
+  );
+  check(
+    "return chain correct",
+    r.inbound === "0AF3791T12JANMAABOMNN1\u00a70AF207S13JANBOMCDGNN1\u00a70AF32S13JANCDGATLNN1",
+    r.inbound
+  );
+  check(
+    "individual sells correct",
+    r.individual ===
+      `0AF33S21DECATLCDGGK1
+0AF194S22DECCDGBLRGK1
+0AF3780T23DECBLRMAAGK1
+0AF3791T12JANMAABOMGK1
+0AF207S13JANBOMCDGGK1
+0AF32S13JANCDGATLGK1`,
+    r.individual
+  );
+
+  // a genuine HUMAN edit still sticks (learning must not be disabled wholesale)
+  clearLearned();
+  const humanEdit = { ...clean.segments[1], equip: "359", sourceStated: undefined };
+  learnFlight(humanEdit as never);
+  const r2 = convert(`Paris (CDG) to Bengaluru (BLR) on Tue, Dec 22
+12:35 PM to 2:50 AM (9h 45m)
+Air France 194
+Premium Economy (S)`);
+  check("human-taught equipment still applied", r2.segments[0].equip === "359", r2.segments[0].equip);
+  clearLearned();
 }
 
 console.log(`\n==== ${pass} passed, ${fail} failed ====`);
