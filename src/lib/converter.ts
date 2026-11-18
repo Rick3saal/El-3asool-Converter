@@ -4,7 +4,7 @@
  * one formatter, one validator.
  */
 import { Cabin, ConverterResult, Issue, RawFlight, Segment, SourceStated, UnknownClassQuestion } from "./types";
-import { parseItineraryText, splitDirections } from "./parser";
+import { parsePreprocessedItinerary, preprocessText, splitDirections } from "./parser";
 import {
   additionalLine,
   chainLines,
@@ -23,6 +23,8 @@ import {
 } from "./learning";
 import { parseExplicitAircraftString } from "./aircraft";
 import {
+  ENCLOSED_CLASS,
+  LABELLED_CLASS,
   lookupCabinForClass,
   provisionalCabinFor,
 } from "./cabinClasses";
@@ -45,9 +47,8 @@ export function convertToSabre(rawText: string, fallbackCabin: Cabin | null): Co
   // short-circuit through learned itinerary memory in that case: old learned
   // data may contain a previous AI mistake (for example AF 194 = I instead
   // of the source's S). The deterministic parser below preserves the letter.
-  const hasExplicitBookingClass =
-    /\([A-Z]\)/i.test(rawText) ||
-    /\b(?:booking|fare|rbd|reservation)\s*class\s*[:：]?\s*[A-Z]\b/i.test(rawText);
+  const text = preprocessText(rawText);
+  const hasExplicitBookingClass = ENCLOSED_CLASS.test(text) || LABELLED_CLASS.test(text);
 
   // 1. Check if this exact or template itinerary has been learned from AI
   if (isLearningEnabled() && !hasExplicitBookingClass) {
@@ -66,7 +67,7 @@ export function convertToSabre(rawText: string, fallbackCabin: Cabin | null): Co
   }
 
   // 2. Local deterministic parser
-  const parse = parseItineraryText(rawText);
+  const parse = parsePreprocessedItinerary(text);
   return convertFlights(parse.flights, fallbackCabin, parse.issues);
 }
 

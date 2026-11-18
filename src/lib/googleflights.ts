@@ -27,6 +27,7 @@ import type { Cabin, ParsedDate, RawFlight } from "./types";
 import { airlineFromName, isAirlineCode } from "./airlines";
 import { parseExplicitAircraftString } from "./aircraft";
 import { cleanOperator } from "./operator";
+import { CABIN_NAME, cabinFromName, ENCLOSED_CLASS, LABELLED_CLASS } from "./cabinClasses";
 import { addDays, dateGapDays } from "./dates";
 
 /* ------------------------------------------------------------------ */
@@ -45,10 +46,9 @@ const MON_NAME = "(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*
 
 type GfKind =
   | "OPBY" | "LAYOVER" | "TIMERANGE" | "TIME" | "DATE" | "FLIGHT" | "UNKNOWN_FLIGHT" | "AIRPORT"
-  | "ROUTE" | "DURATION" | "CABIN" | "AIRCRAFT" | "AIRLINE" | "OTHER";
+  | "ROUTE" | "DURATION" | "FARE" | "AIRCRAFT" | "AIRLINE" | "OTHER";
 
 interface GfLine {
-  idx: number;
   text: string;
   kind: GfKind;
   date?: ParsedDate;
@@ -73,8 +73,6 @@ interface GfLine {
   minutes?: number;
   /** airport line that belongs to a layover block, never a flight endpoint */
   layoverAirport?: boolean;
-  /** operated-by line already claimed by a flight */
-  used?: boolean;
 }
 
 function matchOpbyLine(s: string): string | null {
@@ -277,23 +275,14 @@ function matchDurationLine(s: string): number | null {
   return null;
 }
 
-function matchCabinLine(s: string): { cabin: Cabin; bookingClass?: string } | null {
-  const m =
-    /^(?:basic\s+)?(premium\s+economy|premium\s+eco|economy|coach|business|first)(?:\s+class)?(?:\s*[(\[]([A-Z])[)\]])?$/i.exec(
-      s.trim()
-    );
-  if (!m) return null;
-  const w = m[1].toLowerCase();
-  let cabin: Cabin;
-  if (w === "first") cabin = "FIRST";
-  else if (w === "business") cabin = "BUSINESS";
-  else if (w.startsWith("premium")) cabin = "PREMIUM";
-  else cabin = "ECONOMY";
-  return { cabin, bookingClass: m[2] ? m[2].toUpperCase() : undefined };
-}
+const CABIN_ONLY = new RegExp(`^${CABIN_NAME.source}$`, "i");
+// A cabin + letter (or an explicitly labelled booking class) is a field even
+// inline with a flight number, aircraft or amenities. A bare word like "first"
+// in prose is not: only accept cabin-only values on a line of their own.
+const INLINE_FARE = new RegExp(`(?:${CABIN_NAME.source}\\s*)?${ENCLOSED_CLASS.source}|${LABELLED_CLASS.source}`, "gi");
 
-function classify(text: string, idx: number): GfLine {
-  const base: GfLine = { idx, text, kind: "OTHER" };
+function classify(text: string): GfLine {
+  const base: GfLine = { text, kind: "OTHER" };
 
   const op = matchOpbyLine(text);
   if (op) return { ...base, kind: "OPBY", operator: op };
@@ -326,8 +315,8 @@ function classify(text: string, idx: number): GfLine {
   const du = matchDurationLine(text);
   if (du !== null) return { ...base, kind: "DURATION", minutes: du };
 
-  const cb = matchCabinLine(text);
-  if (cb) return { ...base, kind: "CABIN", cabin: cb.cabin, bookingClass: cb.bookingClass };
+  const cb = CABIN_ONLY.exec(text);
+  if (cb) return { ...base, kind: "FARE", cabin: cabinFromName(cb[1]) };
 
   // an aircraft description is supporting info — never a segment
   if (text.length <= 48 && parseExplicitAircraftString(text) !== null) {
@@ -342,11 +331,35 @@ function classify(text: string, idx: number): GfLine {
 
 function toLines(text: string): GfLine[] {
   const out: GfLine[] = [];
-  text.split("\n").forEach((raw, i) => {
-    const t = raw.replace(/^[\s\u00b7\u2022\u2219]+/, "").trim();
-    if (!t) return;
-    out.push(classify(t, i));
-  });
+  const trimField = (s: string) => s.replace(/^[\s·•∙|,;–—-]+|[\s·•∙|,;–—-]+$/g, "");
+  const addLines = (fragment: string) => {
+    for (const raw of fragment.split("\n")) {
+      const t = trimField(raw);
+      if (t) out.push(classify(t));
+    }
+  };
+  // Split *only* at explicit fare fields. Keep both sides for classification:
+  // "Etihad 16 · Business (D)" still has a flight, "Boeing 787 · Business
+  // (D) in-seat power" still has an aircraft, even if the letter wrapped.
+  let start = 0;
+  for (const m of text.matchAll(INLINE_FARE)) {
+    const [, name, paren, bracket, labelled] = m;
+    if (!name && !labelled) {
+      // A detached "(D)" is a field at the start of a line or directly on
+      // a flight designator. "Terminal (D)" in incidental text is not.
+      const prefix = trimField(text.slice(text.lastIndexOf("\n", m.index) + 1, m.index));
+      if (prefix && !matchFlightLine(prefix) && !looksLikeUnknownFlightLine(prefix)) continue;
+    }
+    addLines(text.slice(start, m.index));
+    out.push({
+      text: m[0],
+      kind: "FARE",
+      cabin: name ? cabinFromName(name) : undefined,
+      bookingClass: (paren ?? bracket ?? labelled).toUpperCase(),
+    });
+    start = m.index + m[0].length;
+  }
+  addLines(text.slice(start));
   // an airport printed directly under a layover line is the connection point,
   // never a flight endpoint
   for (let i = 0; i < out.length - 1; i++) {
@@ -452,7 +465,9 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
 
   const flights: RawFlight[] = [];
   let journeyDate: ParsedDate | undefined;
-  let prevAnchor = -1;
+  // Disjoint leg windows: the next leg starts at the first schedule/layover
+  // heading not consumed by this one, not immediately after its flight number.
+  let winStart = 0;
   /** when the previous leg lands — used to date a connection that prints no date */
   let prevArrival: { date: ParsedDate; min: number } | undefined;
 
@@ -460,7 +475,6 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
     const pos = anchors[a];
     const anchor = lines[pos];
     const nextAnchor = a + 1 < anchors.length ? anchors[a + 1] : lines.length;
-    const winStart = prevAnchor + 1;
 
     // ---- first pass: locate the leg's own timerange (if any) ----
     let chosenTimerange: GfLine | undefined;
@@ -471,14 +485,7 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
         timerangeIdx = i;
       }
     }
-    // collect this leg's own block data, ignoring anything that belongs to the
-    // previous leg (which sits before this leg's own timerange)
     let routeCodes: string[] | undefined;
-    let cabin: Cabin | undefined;
-    let bookingClass: string | undefined;
-    let equipRaw: string | undefined;
-    let duration: number | undefined = chosenTimerange?.minutes;
-    let opbyIdx = -1;
     const pairs: Pair[] = [];
     /** a departure date printed inside this leg's own block (heading or per-leg) */
     let ownDate: ParsedDate | undefined;
@@ -514,53 +521,18 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
         // Keep the last route before the flight. Journey headings, when present,
         // are followed by the leg's more specific route and are overwritten.
         routeCodes = L.routeCodes;
-      } else if (L.kind === "CABIN") {
-        if (chosenTimerange && i < timerangeIdx) continue; // previous leg's cabin
-        cabin = L.cabin;
-        if (L.bookingClass) bookingClass = L.bookingClass;
-      } else if (L.kind === "AIRCRAFT") {
-        if (chosenTimerange && i < timerangeIdx) continue;
-        equipRaw = L.text;
-      } else if (L.kind === "DURATION") {
-        if (chosenTimerange && i < timerangeIdx) continue;
-        duration = L.minutes;
-      } else if (L.kind === "OPBY" && !L.used) {
-        if (chosenTimerange && i < timerangeIdx) continue;
-        opbyIdx = i;
-      }
-    }
-
-    /* ---- trailing details printed under the flight number ---- */
-    for (let i = pos + 1; i < nextAnchor; i++) {
-      const L = lines[i];
-      // an arrival date under the flight still describes THIS leg
-      if (L.kind === "DATE" && L.isArrival) {
-        if (!arrivalDateLine) arrivalDateLine = L.date;
-        continue;
-      }
-      if (startsNextLeg(L.kind)) break;
-      if (L.kind === "CABIN") {
-        if (!cabin) cabin = L.cabin;
-        if (!bookingClass && L.bookingClass) bookingClass = L.bookingClass;
-      } else if (L.kind === "AIRCRAFT") {
-        if (!equipRaw) equipRaw = L.text;
-      } else if (L.kind === "DURATION") {
-        if (duration === undefined) duration = L.minutes;
-      } else if (L.kind === "OPBY" && !L.used) {
-        opbyIdx = i;
       }
     }
 
     /* ---- times printed below the flight number (rare layouts) ---- */
+    let scheduleEnd = pos;
     if (!chosenTimerange && pairs.length < 2) {
       for (let i = pos + 1; i < nextAnchor; i++) {
         const L = lines[i];
-        if (L.kind === "FLIGHT") break;
+        if (L.kind === "LAYOVER") break;
         if (L.kind === "TIMERANGE") {
-          if (!chosenTimerange) {
-            chosenTimerange = L;
-            timerangeIdx = i;
-          }
+          chosenTimerange = L;
+          scheduleEnd = i;
           break;
         }
         if (L.kind === "TIME") {
@@ -568,9 +540,50 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
           const code = nxt && nxt.kind === "AIRPORT" && !nxt.layoverAirport ? nxt.airportCode : undefined;
           pairs.push({ min: L.min!, off: L.dayOffset ?? 0, code });
           if (code) i++;
+          scheduleEnd = i;
+          if (pairs.length >= 2) break;
         } else if (L.kind === "ROUTE" && !routeCodes && !headerIdx.has(i)) {
           routeCodes = L.routeCodes;
         }
+      }
+    }
+
+    /* ---- trailing details printed under the flight number ---- */
+    let nextStart = pos + 1;
+    for (; nextStart < nextAnchor; nextStart++) {
+      const L = lines[nextStart];
+      // an arrival date under the flight still describes THIS leg
+      if (L.kind === "DATE" && L.isArrival) {
+        if (!arrivalDateLine) arrivalDateLine = L.date;
+        continue;
+      }
+      if (nextStart > scheduleEnd && startsNextLeg(L.kind)) break;
+    }
+
+    // Read supporting fields from the whole leg, not at a fixed offset from
+    // the clock or flight number. A printed pair wins as a pair over a bare
+    // cabin/letter; the same line will never be considered by the next leg.
+    let cabin: Cabin | undefined;
+    let bookingClass: string | undefined;
+    let equipRaw: string | undefined;
+    let duration = chosenTimerange?.minutes;
+    let operatedBy = anchor.operator;
+    for (let i = winStart; i < nextStart; i++) {
+      const L = lines[i];
+      if (L.kind === "FARE") {
+        if (L.cabin && L.bookingClass) {
+          cabin = L.cabin;
+          bookingClass = L.bookingClass;
+        } else {
+          cabin ??= L.cabin;
+          bookingClass ??= L.bookingClass;
+        }
+      } else if (L.kind === "AIRCRAFT") {
+        equipRaw ??= L.text;
+      } else if (L.kind === "DURATION") {
+        duration ??= L.minutes;
+      } else if (L.kind === "OPBY") {
+        operatedBy = L.operator;
       }
     }
 
@@ -670,13 +683,6 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
     if (arrDay === 0 && dep !== undefined && arr !== undefined && arr < dep) arrDay = 1;
     if (arrDay > 2) arrDay = 2;
 
-    /* ---- operated by: ONLY when explicitly printed for this flight ---- */
-    let operatedBy: string | undefined = anchor.operator;
-    if (opbyIdx >= 0) {
-      operatedBy = lines[opbyIdx].operator;
-      lines[opbyIdx].used = true;
-    }
-
     /* ---- marketing carrier + equipment, resolved per leg ---- */
     const airline = anchor.airline!;
     const equip = equipRaw ? parseExplicitAircraftString(equipRaw, airline) ?? undefined : undefined;
@@ -702,7 +708,7 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
     });
 
     prevArrival = date && arr !== undefined ? { date: addDays(date, arrDay), min: arr } : undefined;
-    prevAnchor = pos;
+    winStart = nextStart;
   }
 
   // Only take over when every printed flight number became a usable leg;

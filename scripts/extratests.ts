@@ -934,6 +934,18 @@ Business (I)`;
   check("card durations retained", r.itinerary.includes("CX 603 12MAY HKG KTM 655P 945P 330 5.05") && r.itinerary.includes("CX 640 25MAY KTM HKG 1100P 600A¥1 330 4.45"), r.itinerary);
 }
 
+/* A free-text block (not a card) must also prefer the cabin's printed letter. */
+{
+  const block = `American 1627 · Airbus A321
+San Diego (SAN) → Charlotte (CLT)
+Tue, Dec 22
+Departure 9:57 PM · Arrival 5:34 AM`;
+  const stated = convert(`${block.replace("1627", "1627 · Terminal (C)")}\n**First**\n\n( d ) in-seat power sourcelunch`);
+  check("free text: wrapped First (d) beats an unrelated nearby letter", stated.segments[0]?.cabin === "FIRST" && stated.segments[0].bookingClass === "D", stated.itinerary);
+  const absent = convert(`1 passenger(s)\n${block}`);
+  check("free text: a plural suffix is not a booking class", absent.missingCabinFlights.join() === "AA 1627 · SAN → CLT", absent.itinerary);
+}
+
 /* ====== REGRESSION: stale AI-learned cabin must not override the source ======
  * Bug: a previous AI read stored AF 194 CDG-BLR as class I / BUSINESS / 359.
  * Every later conversion of a text that clearly says "Premium Economy (S)" /
