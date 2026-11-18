@@ -11,7 +11,7 @@ import { findAircraftTokens, parseExplicitAircraftString } from "./aircraft";
 import { cityToCode, sameCity } from "./airports";
 import { lookupFlightKnowledge } from "./learning";
 import { lookupKnownFlight } from "./knownFlights";
-import { lookupCabinForClass } from "./cabinClasses";
+import { CABIN_NAME, cabinFromName, ENCLOSED_CLASS, LABELLED_CLASS, lookupCabinForClass } from "./cabinClasses";
 import { isGoogleFlightsStyleC, parseGoogleFlightsStyleC } from "./googleflights";
 import { dateGapDays } from "./dates";
 
@@ -24,18 +24,21 @@ const MON3 = "JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC";
 /* ---------------- preprocessing ---------------- */
 
 export function preprocessText(raw: string): string {
-  let t = raw.replace(/\r\n?/g, "\n");
+  let t = raw.replace(/\r\n?|[\u2028\u2029]/g, "\n");
   t = t.replace(/https?:\/\/\S+/gi, " ");
   t = t.replace(/www\.\S+/gi, " ");
   t = t.replace(/!\[[^\]]*\]\([^)]*\)/g, " ");
   t = t.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
   t = t.replace(/<[^>]+>/g, " ");
+  // Literal Markdown from a clipboard/Chat paste. Leave single Sabre stars
+  // (AF*3775, *CLT-AUH OPERATED BY ...) intact.
+  t = t.replace(/(\*\*|__)([\s\S]*?)\1/g, "$2");
   t = t.replace(/[•·●◦]/g, " · ");
   t = t.replace(/[–—―]/g, "-");
   t = t.replace(/[→➔⇒⟶➜]/g, "→");
-  t = t.replace(/[\u00A0\u2009\u202F]/g, " ");
-  t = t.replace(/\t+/g, " ");
-  t = t.replace(/[ \t]{2,}/g, " ");
+  // Clipboard spacing is cosmetic, but keep line/leg boundaries intact.
+  t = t.replace(/\u200B/g, "").replace(/[^\S\n]+/g, " ");
+  t = t.replace(/\( /g, "(").replace(/ \)/g, ")");
   // unglue a "to"/"+N" that ran into a clock time ("to9:20 AM+1" -> "to 9:20 AM+1")
   t = t.replace(/\bto(?=\d{1,2}:\d{2})/gi, "to ");
   t = t.replace(/(\d{1,2}:\d{2})\.([AP]M)\b/gi, "$1 $2");
@@ -290,24 +293,22 @@ function tokenize(text: string): { toks: Tok[]; opbyRanges: Array<[number, numbe
     if (off === 1 || off === 2) push({ kind: "DAYOFF", start: m.index, end: m.index + m[0].length, offset: off as 1 | 2 });
   }
 
-  /* cabin words */
-  const cabinRe = /(?<![A-Z0-9-])(premium\s+economy|business|economy|first)(?:\s*class)?(?![A-Za-z])/gi;
+  // Keep a printed cabin + letter together, even across line breaks. Do not
+  // let a nearer, unrelated parenthetical in the block replace this letter.
+  const cabinRe = new RegExp(`(?<![A-Z0-9-])${CABIN_NAME.source}(?![A-Za-z])(?:\\s*${ENCLOSED_CLASS.source})?`, "gi");
   while ((m = cabinRe.exec(text)) !== null) {
-    const w = m[1].toLowerCase();
-    let cabin: Cabin | null = null;
-    if (w === "first") cabin = "FIRST";
-    else if (w === "business") cabin = "BUSINESS";
-    else if (w === "premium economy") cabin = "PREMIUM";
-    else if (w === "economy") cabin = "ECONOMY";
-    if (cabin) push({ kind: "CABIN", start: m.index, end: m.index + m[0].length, cabin });
+    push({
+      kind: "CABIN", start: m.index, end: m.index + m[0].length,
+      cabin: cabinFromName(m[1]), cls: (m[2] ?? m[3])?.toUpperCase(),
+    });
   }
 
-  /* explicit booking classes */
-  const classRe1 = /\(([A-Z])\)/g;
+  /* Unlabelled letters in free text must be uppercase (not "passenger(s)"). */
+  const classRe1 = new RegExp(ENCLOSED_CLASS.source, "g");
   while ((m = classRe1.exec(text)) !== null) {
-    push({ kind: "CLASS", start: m.index, end: m.index + m[0].length, cls: m[1] });
+    push({ kind: "CLASS", start: m.index, end: m.index + m[0].length, cls: m[1] ?? m[2] });
   }
-  const classRe2 = /\b(?:booking|fare|rbd|reservation)\s*class\s*[:：]?\s*([A-Z])\b/gi;
+  const classRe2 = new RegExp(LABELLED_CLASS.source, "gi");
   while ((m = classRe2.exec(text)) !== null) {
     push({ kind: "CLASS", start: m.index, end: m.index + m[0].length, cls: m[1].toUpperCase() });
   }
@@ -1147,8 +1148,9 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
     const cabins = own("CABIN")
       .filter((t) => t.cabin)
       .sort((a, b) => tokDist(a, core) - tokDist(b, core));
-    if (cabins.length > 0) {
-      w.cabin = cabins[0].cabin;
+    const statedCabin = cabins.find((t) => t.cls) ?? cabins[0];
+    if (statedCabin) {
+      w.cabin = statedCabin.cabin;
     } else if (cores[0].start > 0) {
       const globalHead = toks
         .filter((t) => t.kind === "CABIN" && t.cabin && t.end <= cores[0].start)
@@ -1163,7 +1165,9 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
     const nearCabinCls = clsBag.filter(
       (t) => cabins.some((c) => Math.abs(c.start - t.start) < 120) || clsHasKeyword(text, t)
     );
-    if (nearCabinCls.length > 0) {
+    if (statedCabin?.cls) {
+      w.bookingClass = statedCabin.cls;
+    } else if (nearCabinCls.length > 0) {
       nearCabinCls.sort((a, b) => tokDist(a, core) - tokDist(b, core));
       w.bookingClass = nearCabinCls[0].cls;
     } else if (clsBag.length > 0) {
@@ -1554,7 +1558,10 @@ export interface ParseResult {
 }
 
 export function parseItineraryText(rawText: string): ParseResult {
-  const text = preprocessText(rawText);
+  return parsePreprocessedItinerary(preprocessText(rawText));
+}
+
+export function parsePreprocessedItinerary(text: string): ParseResult {
   const issues: Issue[] = [];
 
   /* Sabre-format fast path */

@@ -160,7 +160,94 @@ Operated by American Airlines`;
   check("routing read per leg", r.segments.map((s) => `${s.origin}-${s.dest}`).join(",") === "MSP-ORD,ORD-LHR,LHR-BOM,BOM-LHR,LHR-DFW,DFW-MSP", r.segments.map((s) => `${s.origin}-${s.dest}`).join(","));
   check("outbound/inbound split 3/3", r.segments.filter((s) => s.direction === "OUT").length === 3 && r.segments.filter((s) => s.direction === "IN").length === 3, JSON.stringify(r.segments.map((s) => s.direction)));
   check("business default class J on every leg", r.segments.every((s) => s.bookingClass === "J" && s.cabin === "BUSINESS"));
+  const missing = convert(input.replace("British Airways 296\n\nBusiness", "British Airways 296"));
+  check("a leg with separate clock lines does not inherit the previous leg's fare", missing.missingCabinFlights.join() === "BA 296 · ORD → LHR", JSON.stringify(missing.missingCabinFlights));
   check("no error issues", r.issues.filter((i) => i.level === "error").length === 0, JSON.stringify(r.issues));
+}
+
+/* Reported SAN–DEL paste: the letter belongs to the leg, not to a line or
+ * column. AA's First (D) is especially important: D alone maps to Business. */
+{
+  console.log("\n[Card fares] SAN–DEL mixed First / Business round trip");
+  const markdown = `**San Diego (SAN) to Delhi (DEL) on Tue, Dec 22**
+**San Diego (SAN) to Charlotte (CLT)** on Tue, Dec 22
+**9:57 PM** to **5:34 AM** (4h 37m)
+American 1627
+Airbus A321
+First (D)
+**Layover in CLT (8h 56m)**
+**Charlotte (CLT) to Abu Dhabi (AUH)** on Wed, Dec 23
+**2:30 PM** to **12:35 PM** on Thu, Dec 24 (13h 5m)
+Etihad 16
+Boeing 787
+Business (D)
+**Layover in AUH (1h 55m)**
+**Abu Dhabi (AUH) to Delhi (DEL)** on Thu, Dec 24
+**2:30 PM** to **7:20 PM** (3h 20m)
+Etihad 216
+Boeing 777
+Business (D)
+**Delhi (DEL) to San Diego (SAN) on Tue, Jan 5**
+**Delhi (DEL) to Abu Dhabi (AUH)** on Tue, Jan 5
+**10:05 PM** to **12:25 AM** (3h 50m)
+Etihad 217
+Boeing 777
+Business (C)
+**Layover in AUH (2h 30m)**
+**Abu Dhabi (AUH) to Charlotte (CLT)** on Wed, Jan 6
+**2:55 AM** to **9:35 AM** (15h 40m)
+Etihad 15
+Boeing 787
+Business (C)
+**Layover in CLT (1h 15m)**
+**Charlotte (CLT) to San Diego (SAN)** on Wed, Jan 6
+**10:50 AM** to **1:08 PM** (5h 18m)
+American 1740
+Airbus A321
+First (D)`;
+  const plain = markdown.replace(/\*\*/g, "");
+  const spaced = markdown.replace(/\(([DC])\)/g, "\u00a0( \t**$1**  )").replace(/\n/g, "\r\n \t\r\n\r\n");
+  // Captures the clock line, flight, aircraft, and fare of each leg.
+  const leg = /^(\d[^\n]+)\n((?:American|Etihad) \d+)\n([^\n]+)\n((?:First|Business) \([DC]\))/gm;
+  const variants = {
+    "literal Markdown paste": markdown.replace(/\n/g, "\n\n"),
+    "plain text": plain,
+    "padded letters, tabs and blank lines": spaced,
+    "extra spacing across the card": plain.replace(/\(/g, "(   ").replace(/\)/g, "   )").replace(/ /g, "\u202f "),
+    "letter on the flight number, cabin below the aircraft": plain.replace("American 1627\nAirbus A321\nFirst (D)", "American 1627 ( d )\nAirbus A321\nFirst"),
+    "amenities on the cabin line": plain.replace(/\([DC]\)/g, "$& in-seat power sourcelunch"),
+    "fare above the clock": plain.replace(leg, "$4\n$1\n$2\n$3"),
+    "fare on the flight line": plain.replace(leg, "$1\n$2 · $4 in-seat power sourcelunch\n$3"),
+    "fare on the aircraft line": plain.replace(leg, "$1\n$2\n$3 · $4"),
+    "clock below the flight number": plain.replace(leg, "$2\n$1\n$3\n$4"),
+    "wrapped cabin and letter": plain.replace(/(First|Business) \(([CD])\)/g, "$1\n\n[ \n$2\n ] in-seat power sourcelunch"),
+  };
+  const expectedSells = `0AA1627D22DECSANCLTGK1
+0EY16D23DECCLTAUHGK1
+0EY216D24DECAUHDELGK1
+0EY217C5JANDELAUHGK1
+0EY15C6JANAUHCLTGK1
+0AA1740D6JANCLTSANGK1`;
+  for (const [name, source] of Object.entries(variants)) {
+    const r = convert(source);
+    check(`${name}: all six sell entries keep their own letter`, r.individual === expectedSells, r.individual);
+    check(`${name}: stated cabins and aircraft kept`, r.segments.map(s => `${s.cabin}/${s.equip}`).join(",") ===
+      "FIRST/321,BUSINESS/787,BUSINESS/777,BUSINESS/777,BUSINESS/787,FIRST/321", r.itinerary);
+    check(`${name}: no prompts or conversion issues`, !r.missingCabinFlights.length && !r.unknownClassQuestions.length && !r.issues.length, JSON.stringify(r.issues));
+  }
+
+  const missing = convert(plain.replace("Business (C)", "First checked bag free · Terminal (C)"));
+  check("only the genuinely missing leg prompts", missing.missingCabinFlights.join() === "EY 217 · DEL → AUH", JSON.stringify(missing.missingCabinFlights));
+  const classOnly = convert(plain.replace("Business (C)", "Booking class: Z"));
+  check("a class without a cabin keeps its letter and asks the class-specific question", !classOnly.missingCabinFlights.length &&
+    classOnly.segments[3]?.bookingClass === "Z" && classOnly.unknownClassQuestions.length === 1 && classOnly.unknownClassQuestions[0].classLetter === "Z");
+
+  const { learnItinerary, clearLearned } = await import("../src/lib/learning");
+  const stale = parseItineraryText(plain).flights.map(f => ({ ...f, cabin: "ECONOMY" as const, bookingClass: "Y" }));
+  check("seed an exact stale itinerary", !!learnItinerary(spaced, stale));
+  const remembered = convertToSabre(spaced, "PREMIUM");
+  check("neither stale memory nor a fallback replaces a printed letter", remembered.individual === expectedSells, remembered.individual);
+  clearLearned();
 }
 
 /* ================================================================== */

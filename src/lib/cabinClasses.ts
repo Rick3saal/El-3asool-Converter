@@ -12,6 +12,21 @@
  */
 import type { Cabin } from "./types";
 
+// Source notation shared by the text readers and the learned-itinerary guard.
+export const CABIN_NAME = /\b(?:basic\s+)?(premium\s+(?:economy|eco)|economy|coach|business|first)(?:\s*class)?/i;
+// Match exactly one letter, never an airport (CLT), duration (3h 20m), etc.
+export const ENCLOSED_CLASS = /(?:\(\s*([A-Z])\s*\)|\[\s*([A-Z])\s*\])/i;
+export const LABELLED_CLASS = /\b(?:(?:booking|fare|reservation|rbd)\s*class\s*[:：]?|rbd\s*[:：]?|class\s*[:：])\s*([A-Z])\b/i;
+
+/** Map a label matched by CABIN_NAME. */
+export function cabinFromName(name: string): Cabin {
+  const w = name.toLowerCase();
+  if (w === "first") return "FIRST";
+  if (w === "business") return "BUSINESS";
+  if (w.startsWith("premium")) return "PREMIUM";
+  return "ECONOMY";
+}
+
 export const CONFIRMED_CABIN_CLASSES: Record<string, Record<string, Cabin>> = {
   // British Airways confirmed booking classes (T, W, E, Z = World Traveller Plus / Premium Economy)
   BA: {
