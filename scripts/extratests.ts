@@ -131,7 +131,7 @@ Duration: 12 hr 50 min`;
   check("exactly 4 segments", r.segments.length === 4, `got ${r.segments.length}: ` + r.segments.map(s => s.airline + s.num).join(","));
   check("all four flight numbers present", ["5810", "929", "958", "4577"].every(n => r.segments.some(s => s.num === n)), r.segments.map(s => s.num).join(","));
   check("layover duration never used as flight elapsed", !r.itinerary.includes("3.23") && !r.itinerary.includes("3.38"), r.itinerary);
-  check("UA5810 keeps own date/time/elapsed", r.itinerary.includes("1 UA 5810 8JAN EWR ORD 815P 945P --- 1.30 0 N  CABIN-ECONOMY"), r.itinerary);
+  check("UA5810 keeps own date/time/elapsed", r.itinerary.includes("1 UA 5810 8JAN EWR ORD 815P 945P 738 1.30 0 N  CABIN-ECONOMY"), r.itinerary);
   check("UA929 keeps own ¥1 + 763 + 8.05", r.itinerary.includes("2 UA 929 8JAN ORD FRA 1115P 120P¥1 763 8.05 0 N  CABIN-BUSINESS"), r.itinerary);
   check("UA958 keeps own 5.50 + own date", r.itinerary.includes("3 UA 958 9JAN FRA DXB 405P 1155P --- 5.50 0 N  CABIN-ECONOMY"), r.itinerary);
   check("UA4577 keeps own 12.50 + own date", r.itinerary.includes("4 UA 4577 10JAN DXB EWR 210A 800A --- 12.50 0 N  CABIN-ECONOMY"), r.itinerary);
@@ -183,7 +183,7 @@ Duration: 12 hr 30 min`;
   check("seg2 date 30DEC", s2?.date.day === 30 && s2?.date.month === 12);
   check("seg2 dep 200P arr 730P", s2?.dep === 840 && s2?.arr === 1170);
   check("seg2 economy default Y (not D from flight 1)", s2?.bookingClass === "Y", `got ${s2?.bookingClass}`);
-  check("seg2 CABIN-ECONOMY", r.itinerary.includes("2 MS 987 30DEC CAI JFK 200P 730P --- 12.30 0 N  CABIN-ECONOMY"), r.itinerary);
+  check("seg2 CABIN-ECONOMY", r.itinerary.includes("2 MS 987 30DEC CAI JFK 200P 730P 788 12.30 0 N  CABIN-ECONOMY"), r.itinerary);
 }
 
 /* ====== REGRESSION: header-above-flight layout (ICT/LHR, United) ====== */

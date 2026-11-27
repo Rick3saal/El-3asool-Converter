@@ -3,6 +3,7 @@ import { shouldAutoRunAi } from "../src/lib/ai";
 import { saveLearnedClass, clearLearnedClasses } from "../src/lib/cabinClasses";
 import { canSaveItinerary, learnItinerary, findLearnedItinerary, forgetItineraryForText, clearLearned } from "../src/lib/learning";
 import { shouldPrintOperatedBy } from "../src/lib/sabre";
+import { inferFleetRouteEquipment, inferRouteEquipment, lookupKnownFlight } from "../src/lib/knownFlights";
 import { ocrCleanText } from "../src/lib/parser";
 
 function assert(condition: boolean, msg: string) {
@@ -105,6 +106,47 @@ const duplicateAdNoise = {
 };
 const deltaSaudiaMerge = mergeSourceFlights([duplicateAdNoise, sv867PhysicalLeg], [sv867PhysicalLeg]);
 assert(deltaSaudiaMerge.length === 1 && deltaSaudiaMerge[0]?.airline === "SV" && deltaSaudiaMerge[0]?.number === "867", "Duplicate AD 2 OCR noise collapses into the actual SV 867 leg");
+
+console.log("=== Testing user-supplied fleet/route aircraft priors ===");
+assert(inferFleetRouteEquipment("BA", "LHR", "ATH")?.equip === "32N", "BA LHR-Europe prior selects A320neo family");
+assert(inferFleetRouteEquipment("BA", "JFK", "LHR", undefined, 500, 2)?.equip === "772", "BA JFK-LHR winter prior uses 777-200");
+assert(inferFleetRouteEquipment("BA", "JFK", "LHR", undefined, 500, 6)?.equip === "77W", "BA JFK-LHR summer prior uses 777-300ER family");
+assert(inferFleetRouteEquipment("UA", "EWR", "DEL")?.equip === "789", "United Newark-India prior selects 787-9");
+assert(inferFleetRouteEquipment("SV", "JED", "BLR")?.equip === "333", "Saudia Jeddah-India prior selects A330-300");
+assert(inferFleetRouteEquipment("AA", "LHR", "JFK", undefined, 500, 2, true) === undefined, "Unknown codeshare operator blocks marketing-airline fleet guess");
+assert(lookupKnownFlight("AA", "6994", "LHR", "JFK")?.operator === "BRITISH AIRWAYS", "AA 6994 codeshare uses the supplied BA operating-carrier mapping");
+assert(lookupKnownFlight("IB", "7873", "AMM", "MAD")?.operator === "ROYAL JORDANIAN", "Iberia 78xx to Amman resolves to Royal Jordanian");
+assert(inferRouteEquipment("IB", "AMM", "MAD", "ROYAL JORDANIAN", 300, 3, true) === "320", "IB 78xx equipment uses the RJ fleet prior");
+const airlineFleetCases: Array<[string, string, string, string]> = [
+  ["AA", "JFK", "LHR", "789"], ["DL", "ATL", "CDG", "333"],
+  ["UA", "EWR", "DEL", "789"], ["B6", "JFK", "LHR", "321"],
+  ["AS", "SEA", "HNL", "7M9"], ["HA", "HNL", "LAX", "332"],
+  ["WN", "DAL", "HOU", "73W"], ["IB", "MAD", "JFK", "333"],
+  ["SV", "JED", "CAI", "333"], ["RJ", "AMM", "JFK", "788"],
+  ["LH", "FRA", "JFK", "359"], ["AF", "CDG", "JFK", "77W"],
+  ["KL", "AMS", "DEL", "77W"], ["VS", "LHR", "BOS", "359"],
+  ["TK", "IST", "JFK", "77W"], ["EK", "DXB", "JFK", "77W"],
+  ["QR", "DOH", "JFK", "77W"], ["EY", "AUH", "JFK", "789"],
+  ["MS", "CAI", "JFK", "788"], ["AI", "DEL", "JFK", "77W"],
+  ["AC", "YYZ", "LHR", "333"], ["AM", "MEX", "LAX", "738"],
+  ["CM", "PTY", "MIA", "738"], ["LA", "SCL", "LIM", "320"],
+  ["AV", "BOG", "JFK", "789"],
+];
+for (const [airline, origin, dest, expected] of airlineFleetCases) {
+  assert(
+    inferFleetRouteEquipment(airline, origin, dest)?.equip === expected,
+    `${airline} ${origin}-${dest} fleet prior is ${expected}`
+  );
+}
+assert(inferFleetRouteEquipment("AA", "JFK", "DCA", undefined, 75)?.equip === "E75", "Short US regional hops use the supplied E75 prior");
+const baNoAircraft = convert(`British Airways 641\nATH → LHR\nWed, Feb 28\nDeparture 7:55 AM · Arrival 10:10 AM\nEconomy (Y)`, null);
+assert(baNoAircraft.segments[0]?.equip === "32N" && !baNoAircraft.failedEquipmentFlights.length, "Route-only BA fleet prior fills missing equipment without online lookup");
+assert(baNoAircraft.issues.some((issue) => issue.text.includes("not live-verified")), "Route prior is labeled as a non-live estimate");
+const routeEquipmentGds = convert(`1 BA 641 J 28FEB ATH LHR 755A 1010A\n2 AA*6994 I 28FEB LHR JFK 1255P 400P\n3 BA 112 O 20MAR JFK LHR 710P 615A¥1\n4 BA 396 O 21MAR LHR CAI 855A 400P`, null);
+assert(routeEquipmentGds.segments.map((s) => `${s.airline}${s.num}:${s.equip}`).join(",") === "BA641:32N,AA6994:772,BA112:772,BA396:32N", "Missing aircraft in GDS-format itinerary are filled from route priors");
+assert(routeEquipmentGds.segments.find((s) => s.airline === "AA")?.operatedBy === "BRITISH AIRWAYS", "Known AA 6994 codeshare resolves its BA operator before fleet lookup");
+assert(routeEquipmentGds.failedEquipmentFlights.length === 0, "Known routes avoid online aircraft lookup");
+
 assert(shouldPrintOperatedBy("AS", "Horizon Air"), "AS and Horizon Air are different (regional subsidiary)");
 assert(shouldPrintOperatedBy("AF", "Indigo"), "AF and Indigo are different");
 assert(shouldPrintOperatedBy("UA", "SkyWest Airlines"), "UA and SkyWest are different");
@@ -181,7 +223,7 @@ assert(r6Learned.segments[4].cabin === "BUSINESS", "Learned cabin applied to seg
 console.log("=== Testing Auto-run AI Criteria ===");
 // Case A: Missing equipment "---"
 const equipMissingText = `AF 123
-JFK → CDG
+AMM → BOM
 Wed, Dec 4
 Departure 6:00 PM · Arrival 7:00 AM +1
 Economy (Y)
