@@ -27,6 +27,8 @@ const swissCardOcr = `$1,488 Off Retail AWD\n+ Swiss 4:50 AM — 5:30 PM · 23h 
 const swissCardResult = convert(swissCardOcr, null);
 assert(swissCardResult.segments.length === 2, `Swiss search card yields both legs, got ${swissCardResult.segments.length}`);
 assert(!swissCardResult.segments.some((s) => s.airline === "LX" && s.num === "4"), "Swiss 4:50 AM is recognized as a time, never bogus flight LX 4");
+const compactSwissClock = convert("+ Swiss 450AM to 530PM · 23h 10m · BLR to MIA via ZRH", null);
+assert(!compactSwissClock.segments.some((s) => s.airline === "LX" && s.num === "450"), "OCR compact clock Swiss 450AM is never misread as flight LX 450");
 assert(swissCardResult.itinerary === `1 LX 141 14DEC BLR ZRH 450A 1050A 333 10.30 0 N  CABIN-BUSINESS\n2 LX 64 14DEC ZRH MIA 1250P 530P 77W 10.40 0 N  CABIN-BUSINESS\n\n<--additional-->\n1 LX 141J 14DEC\n2 LX 64Z 14DEC`, "Swiss card produces both exact Sabre legs with separate classes and equipment");
 assert(swissCardResult.outbound === "0LX141J14DECBLRZRHNN1§0LX64Z14DECZRHMIANN1", "Swiss connection outbound chain contains both NN1 sells");
 assert(swissCardResult.individual === "1- 0LX141J14DECBLRZRHGK1\n2- 0LX64Z14DECZRHMIAGK1", "Swiss individual sells contain both numbered GK1 legs");
@@ -40,6 +42,28 @@ assert(fiveLegResult.itinerary === `1 AC 1643 3DEC MIA YYZ 725A 1039A 321 3.14 0
 assert(fiveLegResult.outbound === "0AC1643P3DECMIAYYZNN1§0EK242O3DECYYZDXBNN1§0EK566O4DECDXBBLRNN1", "Five-leg outbound chain has the three outbound flights");
 assert(fiveLegResult.inbound === "0EK567O14DECBLRDXBNN1§0EK213O15DECDXBMIANN1", "Five-leg inbound chain has the two return flights");
 assert(fiveLegResult.individual === "1- 0AC1643P3DECMIAYYZGK1\n2- 0EK242O3DECYYZDXBGK1\n3- 0EK566O4DECDXBBLRGK1\n4- 0EK567O14DECBLRDXBGK1\n5- 0EK213O15DECDXBMIAGK1", "Five individual GK1 entries remain numbered in itinerary order");
+
+assert(
+  ocrCleanText("Business Class (0) · Business Class (2) · Al 2409 · 9:50 PM*!") ===
+    "Business Class (O) · Business Class (Z) · AI 2409 · 9:50 PM+1",
+  "OCR class, Air India code, and overnight marker confusions are repaired from context"
+);
+
+// This reproduces the next screenshot's full-page OCR plus the recovered
+// fine-print lines from the overlapping detail pass. It ensures summary-bar
+// clocks like Swiss 450AM cannot become a bogus LX 450 flight or overwrite the
+// preceding Air India leg's arrival time.
+const uaSwissOcr = `»/,690 UIT Retall AWD ©)\n2:42 PM 8:50 AM\nMultiple Airlin... — 31h 38m MIA to BLR EWR, DEL ®o\nES P Dec 05, 2026 ’ Dec 07, 2026 ' nd\nMiami (MIA) to Bangalore (BLR) on Sat, Dec 5\nfe) &) Miami (MIA) to New York (EWR) © Sat, Dec 5 0] 2:42 PM to 5:53 PM ¢ (3h 11m)\nUA 2231 (Operated by United Airlines) Boeing 737 MAX 9 | First Class (J)\n| 2h 42m Layover ® New York, United States. This is a connecting flight in EWR.\nfe) 8 New York (EWR) to New Delhi (DEL) « Sat, Dec 5 0] 8:35 PM to 9:50 PM*! © (14h 45m)\nUA 82 (Operated by United Airlines) Boeing 787-9 | Business Class\n| 8h 10m Layover e New Delhi, India. This is a connecting flight in DEL.\nfe) [«] New Delhi (DEL) to Bangalore (BLR) * Mon, Dec 7 () 6:00 AM to 8:50 AM « (2h 50m)\nAl 2409 (Operated by Air India) Airbus A321-100/200 | Business Class (D)\n== Swiss 450AM 530PM 23h 10m BLR to MIA ZRH\nDec 14, 2026 Dec 14, 2026\nBangalore (BLR) to Miami (MIA) on Mon, Dec 14\n®) == Bangalore (BLR) to Zurich (ZRH) * Mon, Dec 14 0) 4:50 AM to 10:50 AM » (10h 30m)\nLX 141 (Operated by Swiss) Airbus A330-300 | Business Class (2)\n| 2h Layover e Zurich, Switzerland. This is a connecting flight in ZRH.\nO | Zurich (ZRH) to Miami (MIA) « Mon, Dec 14 (J 12:50 PM to 5:30 PM « (10h 40m)\nLX 64 (Operated by Swiss) Boeing 777-300ER | Business Class (2)`;
+const uaSwissResult = convert(ocrCleanText(uaSwissOcr), null);
+assert(uaSwissResult.segments.length === 5, `All five flights survive actual OCR layout, got ${uaSwissResult.segments.length}`);
+assert(uaSwissResult.segments.map((s) => `${s.airline}${s.num}`).join(",") === "UA2231,UA82,AI2409,LX141,LX64", "OCR flight identities remain in order with no false LX450");
+assert(uaSwissResult.segments[2]?.arr === 8 * 60 + 50, "AI 2409 arrival is 8:50 AM from its individual leg row");
+assert(uaSwissResult.segments[1]?.bookingClass === "J", "UA 82 uses default J for the stated Business cabin, not a fare-verified class");
+assert(uaSwissResult.segments[3]?.bookingClass === "Z" && uaSwissResult.segments[4]?.bookingClass === "Z", "Swiss Z-class OCR confusion resolves to Z for both Z-class legs");
+assert(uaSwissResult.itinerary === `1 UA 2231 5DEC MIA EWR 242P 553P 7M9 3.11 0 N  CABIN-FIRST\n2 UA 82 5DEC EWR DEL 835P 950P¥1 789 14.45 0 N  CABIN-BUSINESS\n3 AI 2409 7DEC DEL BLR 600A 850A 321 2.50 0 N  CABIN-BUSINESS\n4 LX 141 14DEC BLR ZRH 450A 1050A 333 10.30 0 N  CABIN-BUSINESS\n5 LX 64 14DEC ZRH MIA 1250P 530P 77W 10.40 0 N  CABIN-BUSINESS\n\n<--additional-->\n1 UA 2231J 5DEC\n2 UA 82J 5DEC\n3 AI 2409D 7DEC\n4 LX 141Z 14DEC\n5 LX 64Z 14DEC`, "Screenshot itinerary yields correct dates, equipment, cabins, and classes");
+assert(uaSwissResult.outbound === "0UA2231J5DECMIAEWRNN1§0UA82J5DECEWRDELNN1§0AI2409D7DECDELBLRNN1", "United/Air India outbound three-leg chain matches sequence");
+assert(uaSwissResult.inbound === "0LX141Z14DECBLRZRHNN1§0LX64Z14DECZRHMIANN1", "Swiss inbound two-leg chain preserves Z class");
+assert(uaSwissResult.individual === "1- 0UA2231J5DECMIAEWRGK1\n2- 0UA82J5DECEWRDELGK1\n3- 0AI2409D7DECDELBLRGK1\n4- 0LX141Z14DECBLRZRHGK1\n5- 0LX64Z14DECZRHMIAGK1", "All five numbered GK1 commands match the requested output");
 assert(shouldPrintOperatedBy("AS", "Horizon Air"), "AS and Horizon Air are different (regional subsidiary)");
 assert(shouldPrintOperatedBy("AF", "Indigo"), "AF and Indigo are different");
 assert(shouldPrintOperatedBy("UA", "SkyWest Airlines"), "UA and SkyWest are different");

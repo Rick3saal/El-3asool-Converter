@@ -207,10 +207,10 @@ Rules:
   overall journey, NOT a direct flight, when the details list BLR→ZRH and
   ZRH→MIA. Preserve those two legs in that order; do not collapse them into one
   end-to-end segment or treat the connecting airport as a destination summary.
-- Airline labels and times are separate fields: text like "Swiss 4:50 AM" means
-  carrier Swiss followed by a departure time, NOT flight LX 4. A number is a
-  flight number only when it is printed as a flight identifier, not when it is
-  part of a clock, date, price, duration, or UI counter.
+- Airline labels and times are separate fields: text like "Swiss 4:50 AM" or
+  OCR-compact "Swiss 450AM" means carrier Swiss followed by a clock, NOT flight
+  LX 4 or LX 450. A number is a flight number only when printed as a flight
+  identifier, not when it is part of a clock, date, price, duration, or UI counter.
 - When a card shows multiple route rows but omits flight numbers, use reliable
   airline/route/time schedule knowledge to identify each flight when the match
   is unambiguous. Do not make up a number if it cannot be identified reliably.

@@ -58,10 +58,17 @@ export function ocrCleanText(t: string): string {
   s = s.replace(/(?<=:|\d)[Oo](\d)/g, "0$1");
   s = s.replace(/(\d)[lI|](?=:|\d)/g, "$11");
   s = s.replace(/(?<=:|\d)[lI|](\d)/g, "1$1");
-  // OCR commonly reads the letter O in a cabin's booking class as zero.
-  // Restrict this repair to a printed cabin label so genuine digits elsewhere
-  // (prices, dates, times) remain untouched.
-  s = s.replace(/\b((?:first|business|economy|premium(?:\s+economy)?)(?:\s+class)?)\s*\(\s*0\s*\)/gi, "$1 (O)");
+  // A zero in an elapsed-time string is often read as O (e.g. "24h Om").
+  s = s.replace(/\b(\d{1,2})\s*h\s*[Oo]\s*m\b/gi, (_match, hours: string) => `${hours}h 0m`);
+  // The superscript +1 on overnight arrivals is sometimes OCR'd as "*!".
+  s = s.replace(/([AP]\.?M\.?)\s*\*+\s*(?:[!|I1'’]+)?/gi, "$1+1");
+  // Air India's IATA code is often read as "Al"/"A1" in small card text.
+  s = s.replace(/\bA[Il1|]\s*(\d{1,4})\b/g, "AI $1");
+  // OCR confuses booking-class letters with digits inside a cabin label.
+  // Restrict repairs to that context so prices, dates, times, etc. stay intact.
+  s = s.replace(/\b((?:first|business|economy|premium(?:\s+economy)?)(?:\s+class)?)\s*\(\s*([02])\s*\)/gi, (_match, cabin: string, glyph: string) =>
+    `${cabin} (${glyph === "0" ? "O" : "Z"})`
+  );
   return s;
 }
 
@@ -480,7 +487,7 @@ function findCores(text: string, opbyRanges: Array<[number, number]>): Core[] {
     const code = airlineFromName(key);
     if (!code) continue;
     const re = new RegExp(
-      `(?<![A-Za-z0-9])(?:${escapeRe(key)})\\s*(?:\\([A-Z]{2}\\))?\\s*(?:[-–—]\\s*)?(\\d{1,4})(?![0-9]|\\s*:)`,
+      `(?<![A-Za-z0-9])(?:${escapeRe(key)})\\s*(?:\\([A-Z]{2}\\))?\\s*(?:[-–—]\\s*)?(\\d{1,4})(?![0-9]|\\s*:|\\s*[AP]\\.?M\\b)`,
       "gi"
     );
     let m: RegExpExecArray | null;
@@ -495,7 +502,7 @@ function findCores(text: string, opbyRanges: Array<[number, number]>): Core[] {
     }
   }
 
-  const codeRe = /(?<![A-Za-z0-9])([A-Z0-9]{2})\)?(?:\*|\s*\*|\*\s*|[\s-])?(\d{1,4})(?![0-9]|\s*:)/g;
+  const codeRe = /(?<![A-Za-z0-9])([A-Z0-9]{2})\)?(?:\*|\s*\*|\*\s*|[\s-])?(\d{1,4})(?![0-9]|\s*:|\s*[AP]\.?M\b)/g;
   let m: RegExpExecArray | null;
   const aircraftSpans = findAircraftTokens(text).map((a) => [a.start, a.end] as const);
   const inAircraft = (pos: number, end: number) =>
@@ -740,6 +747,19 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
   const layoverLines = new Set(
     toks.filter((t) => t.kind === "LAYOVER" || t.kind === "STOP").map((t) => lineOf(t.start))
   );
+  // Search-card summary bars can contain a total trip duration and endpoints
+  // (e.g. "23h 10m BLR to MIA"). They are not flight rows and must not donate
+  // their clock/duration tokens to the nearest segment.
+  const journeySummaryLines = new Set<number>();
+  text.split("\n").forEach((line, index) => {
+    const routeSummary = /\b[A-Z]{3}\s+(?:to|→)\s*[A-Z]{3}\b/i.test(line);
+    const totalDuration = /\b(\d{1,2})\s*h\s*\d{1,2}\s*m\b/i.exec(line);
+    // 18+ hour route bars are journey-level elapsed totals; a short plain-code
+    // route row with its own duration still belongs to the flight.
+    if (routeSummary && totalDuration && parseInt(totalDuration[1], 10) >= 18) {
+      journeySummaryLines.add(index);
+    }
+  });
 
   /* paragraphs (blank-line separated blocks) */
   interface Para {
@@ -893,7 +913,7 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
   };
 
   for (const t of toks) {
-    if (t.kind === "DIR") continue;
+    if (t.kind === "DIR" || journeySummaryLines.has(lineOf(t.start))) continue;
     const pr = paraOf(t.start);
     let owner = -1;
     let prio: 1 | 2 = 1;
