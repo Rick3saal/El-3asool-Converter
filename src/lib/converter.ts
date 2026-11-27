@@ -22,12 +22,7 @@ import {
   lookupLearnedAircraft,
 } from "./learning";
 import { parseExplicitAircraftString } from "./aircraft";
-import {
-  ENCLOSED_CLASS,
-  LABELLED_CLASS,
-  lookupCabinForClass,
-  provisionalCabinFor,
-} from "./cabinClasses";
+import { lookupCabinForClass, provisionalCabinFor } from "./cabinClasses";
 import {
   inferRouteEquipment,
   lookupKnownFlight,
@@ -43,15 +38,13 @@ const DEFAULT_CLASS: Record<Cabin, string> = {
 };
 
 export function convertToSabre(rawText: string, fallbackCabin: Cabin | null): ConverterResult {
-  // An explicit booking class in the pasted source is authoritative. Do not
-  // short-circuit through learned itinerary memory in that case: old learned
-  // data may contain a previous AI mistake (for example AF 194 = I instead
-  // of the source's S). The deterministic parser below preserves the letter.
   const text = preprocessText(rawText);
-  const hasExplicitBookingClass = ENCLOSED_CLASS.test(text) || LABELLED_CLASS.test(text);
+  const parse = parsePreprocessedItinerary(text);
 
-  // 1. Check if this exact or template itinerary has been learned from AI
-  if (isLearningEnabled() && !hasExplicitBookingClass) {
+  // Learned AI extractions are a fallback, never a replacement for fields the
+  // deterministic parser can read from the current source. In particular, an
+  // earlier summary-clock mistake must not replace a flight row's arrival.
+  if (isLearningEnabled()) {
     const learned = findLearnedItinerary(rawText);
     if (learned && learned.flights.length > 0) {
       const issues: Issue[] = [
@@ -59,16 +52,100 @@ export function convertToSabre(rawText: string, fallbackCabin: Cabin | null): Co
           level: "info",
           text: learned.isAdaptedDates
             ? `⚡ Recognized from AI-learned memory (${learned.summary}) with dates from text.`
-            : `⚡ Recognized from AI-learned memory (${learned.summary}) — no AI call needed.`,
+            : `⚡ Reused AI-learned memory (${learned.summary}) for fields missing from the local parse.`,
         },
       ];
-      return convertFlights(learned.flights, fallbackCabin, issues);
+      return convertFlights(mergeSourceFlights(parse.flights, learned.flights), fallbackCabin, [
+        ...parse.issues,
+        ...issues,
+      ]);
     }
   }
 
-  // 2. Local deterministic parser
-  const parse = parsePreprocessedItinerary(text);
   return convertFlights(parse.flights, fallbackCabin, parse.issues);
+}
+
+/**
+ * Merge AI/cache fields into a deterministic parse. For matching flight IDs,
+ * values found locally win; fallback only fills gaps. A local OCR candidate
+ * with a different ID but the exact same route/date/times as an AI leg is a
+ * duplicate reading of that physical leg, not an extra segment; prefer the AI
+ * identity in that case. Keep other local flights and append AI-only flights.
+ */
+export function mergeSourceFlights(source: RawFlight[], fallback: RawFlight[]): RawFlight[] {
+  if (source.length === 0) return fallback.map((flight) => ({ ...flight }));
+  const samePhysicalLeg = (a: RawFlight, b: RawFlight) =>
+    !!a.origin && !!a.dest && a.origin === b.origin && a.dest === b.dest &&
+    !!a.date && !!b.date && a.date.day === b.date.day && a.date.month === b.date.month &&
+    a.dep !== undefined && a.dep === b.dep && a.arr !== undefined && a.arr === b.arr;
+  const usedFallback = new Set<number>();
+  const merged: RawFlight[] = [];
+  source.forEach((local, localIndex) => {
+    const candidates = fallback
+      .map((flight, index) => ({ flight, index }))
+      .filter(({ flight, index }) =>
+        !usedFallback.has(index) &&
+        flight.airline === local.airline &&
+        flight.number === local.number &&
+        (!local.origin || !local.dest || !flight.origin || !flight.dest ||
+          (flight.origin === local.origin && flight.dest === local.dest))
+      )
+      .sort((a, b) => {
+        const routeA = a.flight.origin === local.origin && a.flight.dest === local.dest ? 0 : 1;
+        const routeB = b.flight.origin === local.origin && b.flight.dest === local.dest ? 0 : 1;
+        return routeA - routeB || Math.abs(a.flight.order - local.order) - Math.abs(b.flight.order - local.order);
+      });
+    const match = candidates[0];
+    if (!match) {
+      // A different OCR flight ID on the same fully matching route/schedule is
+      // likely noise (e.g. a bogus AD 2 duplicating the printed SV 867 row).
+      // Let the AI's identity stand, and omit this duplicate local candidate.
+      if (fallback.some((flight, index) => !usedFallback.has(index) && samePhysicalLeg(local, flight))) return;
+      merged.push({ ...local, order: localIndex });
+      return;
+    }
+    usedFallback.add(match.index);
+    const other = match.flight;
+    merged.push({
+      ...other,
+      ...local,
+      airline: local.airline || other.airline,
+      number: local.number || other.number,
+      origin: local.origin ?? other.origin,
+      dest: local.dest ?? other.dest,
+      date: local.date ?? other.date,
+      dep: local.dep ?? other.dep,
+      arr: local.arr ?? other.arr,
+      arrDay: local.arrDay,
+      cabin: local.cabin ?? other.cabin,
+      bookingClass: local.bookingClass ?? other.bookingClass,
+      equip: local.equip ?? other.equip,
+      equipRaw: local.equipRaw ?? other.equipRaw,
+      elapsed: local.elapsed ?? other.elapsed,
+      elapsedExplicit: local.elapsedExplicit ?? other.elapsedExplicit,
+      operatedBy: local.operatedBy ?? other.operatedBy,
+      hasStarFlag: local.hasStarFlag ?? other.hasStarFlag,
+      direction: local.direction ?? other.direction,
+      directionHint: local.directionHint ?? other.directionHint,
+      order: local.order ?? localIndex,
+    });
+  });
+
+  fallback.forEach((flight, index) => {
+    if (usedFallback.has(index)) return;
+    const identityAlreadyLocal = source.some((local) =>
+      local.airline === flight.airline && local.number === flight.number
+    );
+    const physicalLegAlreadyLocal = source.some((local) => samePhysicalLeg(local, flight));
+    if (!identityAlreadyLocal && !physicalLegAlreadyLocal) merged.push({ ...flight, order: merged.length });
+  });
+  return merged;
+}
+
+/** Use the deterministic source reader to protect data during AI fallback. */
+export function mergeAiFallback(rawText: string, aiFlights: RawFlight[]): RawFlight[] {
+  const local = parsePreprocessedItinerary(preprocessText(rawText)).flights;
+  return mergeSourceFlights(local, aiFlights);
 }
 
 /**

@@ -211,6 +211,9 @@ Rules:
   OCR-compact "Swiss 450AM" means carrier Swiss followed by a clock, NOT flight
   LX 4 or LX 450. A number is a flight number only when printed as a flight
   identifier, not when it is part of a clock, date, price, duration, or UI counter.
+- Assign departure/arrival clocks only from that leg's own detail row. Journey-
+  summary clocks (including a return summary shown between outbound and return
+  legs) must never be borrowed as an adjacent flight's arrival or departure.
 - When a card shows multiple route rows but omits flight numbers, use reliable
   airline/route/time schedule knowledge to identify each flight when the match
   is unambiguous. Do not make up a number if it cannot be identified reliably.
