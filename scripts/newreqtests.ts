@@ -148,7 +148,7 @@ assert(routeEquipmentGds.segments.find((s) => s.airline === "AA")?.operatedBy ==
 assert(routeEquipmentGds.failedEquipmentFlights.length === 0, "Known routes avoid online aircraft lookup");
 saveLearnedClass("DL", "Z", "BUSINESS");
 const deltaAfCodeshares = convert(`1 DL*8698 Z 03DEC MIA CDG 800P 1055A 1\n2 DL*8461 Z 04DEC CDG BLR 1235P 250A 1\n3 DL*8471 Z 14DEC BLR CDG 445A 1105A\n4 DL*8699 Z 14DEC CDG MIA 110P 540P\n5 DL 1211 Z 15DEC MIA ATL 713A 914A`, null);
-assert(deltaAfCodeshares.segments.map((s) => `${s.airline}${s.num}:${s.equip}`).join(",") === "DL8698:77W,DL8461:77W,DL8471:77W,DL8699:77W,DL1211:738", "Confirmed DL/Air France codeshares use offline AF route priors");
+assert(deltaAfCodeshares.segments.map((s) => `${s.airline}${s.num}:${s.equip}`).join(",") === "DL8698:77W,DL8461:789,DL8471:789,DL8699:77W,DL1211:757", "Supplied Delta/Air France schedule equipment codes are used offline");
 assert(deltaAfCodeshares.failedEquipmentFlights.length === 0 && deltaAfCodeshares.failedOperatorFlights.length === 0, "Delta/Air France codeshares need no aircraft or operator lookup");
 assert(deltaAfCodeshares.segments.filter((s) => s.num !== "1211").every((s) => s.operatedBy === "AIR FRANCE"), "Four starred Delta legs resolve to Air France");
 assert(!shouldAutoRunAi(deltaAfCodeshares), "Known DL Z cabin and route aircraft avoid an AI call");
