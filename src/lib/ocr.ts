@@ -35,11 +35,16 @@ async function loadImage(src: string | File): Promise<HTMLImageElement> {
 /** upscale small screenshots and boost contrast for better OCR accuracy */
 function prepareCanvas(img: HTMLImageElement): HTMLCanvasElement {
   const maxW = 2200;
+  // Scale both axes together. The old code enlarged only the canvas height for
+  // typical screenshots, stretching letters vertically while leaving small
+  // equipment / booking-class text at its original pixel width. Upscaling the
+  // whole image makes those faint details legible to Tesseract without
+  // distorting route rows.
   const scale = Math.min(maxW / img.naturalWidth, 2.2);
-  const w = Math.max(img.naturalWidth, 900);
-  const h = Math.round(img.naturalHeight * Math.max(scale, w / img.naturalWidth));
+  const w = Math.round(img.naturalWidth * scale);
+  const h = Math.round(img.naturalHeight * scale);
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(w);
+  canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d");
   if (!ctx) return canvas;
@@ -47,7 +52,9 @@ function prepareCanvas(img: HTMLImageElement): HTMLCanvasElement {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  ctx.filter = "grayscale(1) contrast(1.25) brightness(1.03)";
+  // Search-card secondary details are often gray-on-charcoal. Stronger contrast
+  // helps retain those cabin letters and aircraft labels in the OCR transcript.
+  ctx.filter = "grayscale(1) contrast(1.7) brightness(1.12)";
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   return canvas;
 }

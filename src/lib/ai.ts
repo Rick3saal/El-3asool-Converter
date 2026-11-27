@@ -202,6 +202,18 @@ Read the ENTIRE text and return ONLY the real flights as JSON.
 Rules:
 - ONE real flight = one object. NEVER create an object for an aircraft type,
   airline logo, price, duration, layover text, or generic website UI.
+- First identify the actual leg-by-leg routes, then create one object per leg.
+  A search-result headline such as "Bangalore (BLR) to Miami (MIA)" is only the
+  overall journey, NOT a direct flight, when the details list BLR→ZRH and
+  ZRH→MIA. Preserve those two legs in that order; do not collapse them into one
+  end-to-end segment or treat the connecting airport as a destination summary.
+- Airline labels and times are separate fields: text like "Swiss 4:50 AM" means
+  carrier Swiss followed by a departure time, NOT flight LX 4. A number is a
+  flight number only when it is printed as a flight identifier, not when it is
+  part of a clock, date, price, duration, or UI counter.
+- When a card shows multiple route rows but omits flight numbers, use reliable
+  airline/route/time schedule knowledge to identify each flight when the match
+  is unambiguous. Do not make up a number if it cannot be identified reliably.
 - "Aircraft" describes the flight's equipment — it is NOT a separate flight.
 - Use the MARKETING carrier's IATA code (e.g. American Airlines=AA, Air Serbia=JU,
   British Airways=BA, Egyptair=MS, Swiss=LX, Jetstar Japan=GK, JAL=JL).
@@ -224,16 +236,20 @@ Rules:
 - operatedBy: the operator name exactly as printed if the source says
   "Operated by X" (keep the whole name, e.g. "SKYWEST DBA UNITED EXPRESS"), else "".
 - Preserve source order; it is usually outbound flights first, then the return.
-- Do NOT invent data. If a field is truly absent, use "" (or null).
+- Do NOT guess. A well-established, unambiguous flight number or aircraft may
+  be resolved from schedule knowledge using the leg's carrier, route and local
+  departure time; do this rather than returning a misleading headline flight.
+  Leave truly unavailable fields blank/null. Booking class is fare-specific:
+  copy it only when the source states the letter; never derive it from cabin.
 
-- durationMinutes: the flight's OWN block/elapsed time in MINUTES, exactly as
-  printed for that flight (e.g. "(1h 27m)" -> 87, "(13h 20m)" -> 800,
-  "3h 0m" -> 180). NEVER use a layover/connection duration ("Layover in PHL
-  (2h 0m)") — that belongs to the connection, not to any flight. If the flight
-  itself shows no duration, use null.
+- durationMinutes: the flight's OWN block/elapsed time in MINUTES. Use the
+  duration adjacent to that leg (e.g. "(1h 27m)" -> 87, "(13h 20m)" -> 800,
+  "3h 0m" -> 180). NEVER use total journey duration or a layover/connection
+  duration ("Layover in ZRH (2h 0m)") — those do not belong to a flight. If the
+  flight itself shows no duration, use null.
 - aircraft: copy the aircraft text EXACTLY as printed (e.g. "Embraer ERJ-145",
-  "Airbus A321neo", "Boeing 737 MAX 9 Passenger"). Never leave it blank when
-  the source shows one.
+  "Airbus A321neo", "Boeing 737 MAX 9 Passenger"). If it is absent, resolve it
+  only from reliable, leg-specific schedule knowledge; otherwise use null.
 
 Return JSON of this exact shape:
 {"flights":[{

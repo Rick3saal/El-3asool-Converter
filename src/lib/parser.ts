@@ -476,7 +476,7 @@ function findCores(text: string, opbyRanges: Array<[number, number]>): Core[] {
     const code = airlineFromName(key);
     if (!code) continue;
     const re = new RegExp(
-      `(?<![A-Za-z0-9])(?:${escapeRe(key)})\\s*(?:\\([A-Z]{2}\\))?\\s*(?:[-–—]\\s*)?(\\d{1,4})(?![0-9])`,
+      `(?<![A-Za-z0-9])(?:${escapeRe(key)})\\s*(?:\\([A-Z]{2}\\))?\\s*(?:[-–—]\\s*)?(\\d{1,4})(?![0-9]|\\s*:)`,
       "gi"
     );
     let m: RegExpExecArray | null;
@@ -491,7 +491,7 @@ function findCores(text: string, opbyRanges: Array<[number, number]>): Core[] {
     }
   }
 
-  const codeRe = /(?<![A-Za-z0-9])([A-Z0-9]{2})\)?(?:\*|\s*\*|\*\s*|[\s-])?(\d{1,4})(?![0-9])/g;
+  const codeRe = /(?<![A-Za-z0-9])([A-Z0-9]{2})\)?(?:\*|\s*\*|\*\s*|[\s-])?(\d{1,4})(?![0-9]|\s*:)/g;
   let m: RegExpExecArray | null;
   const aircraftSpans = findAircraftTokens(text).map((a) => [a.start, a.end] as const);
   const inAircraft = (pos: number, end: number) =>
@@ -865,12 +865,27 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
     for (const ci of pr.coreIdx) {
       if (lineOf(cores[ci].start) === tLine) return ci;
     }
-    // otherwise the most recent flight printed above it in this paragraph
+    // OCR often removes blank lines between card rows. A route printed just
+    // before the next flight number belongs to that next leg (not the previous
+    // one); other post-flight details, especially duration tokens near a
+    // layover, keep the established "most recent flight above" ownership.
+    if (t.kind === "ROUTE") {
+      let owner = pr.coreIdx[0];
+      let bestGap = Infinity;
+      for (const ci of pr.coreIdx) {
+        const core = cores[ci];
+        const gap = core.start >= t.end ? core.start - t.end : t.start >= core.end ? t.start - core.end : 0;
+        if (gap < bestGap) {
+          bestGap = gap;
+          owner = ci;
+        }
+      }
+      return owner;
+    }
     let owner = -1;
     for (const ci of pr.coreIdx) {
       if (cores[ci].start < t.start) owner = ci;
     }
-    // nothing above → it heads the paragraph's first flight
     return owner === -1 ? pr.coreIdx[0] : owner;
   };
 
