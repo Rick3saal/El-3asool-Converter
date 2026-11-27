@@ -222,12 +222,12 @@ First (D)`;
     "clock below the flight number": plain.replace(leg, "$2\n$1\n$3\n$4"),
     "wrapped cabin and letter": plain.replace(/(First|Business) \(([CD])\)/g, "$1\n\n[ \n$2\n ] in-seat power sourcelunch"),
   };
-  const expectedSells = `0AA1627D22DECSANCLTGK1
-0EY16D23DECCLTAUHGK1
-0EY216D24DECAUHDELGK1
-0EY217C5JANDELAUHGK1
-0EY15C6JANAUHCLTGK1
-0AA1740D6JANCLTSANGK1`;
+  const expectedSells = `1- 0AA1627D22DECSANCLTGK1
+2- 0EY16D23DECCLTAUHGK1
+3- 0EY216D24DECAUHDELGK1
+4- 0EY217C5JANDELAUHGK1
+5- 0EY15C6JANAUHCLTGK1
+6- 0AA1740D6JANCLTSANGK1`;
   for (const [name, source] of Object.entries(variants)) {
     const r = convert(source);
     check(`${name}: all six sell entries keep their own letter`, r.individual === expectedSells, r.individual);
@@ -726,10 +726,10 @@ Boeing 787-8 Dreamliner`;
   check(
     "individual sells",
     r.individual ===
-      `0BA134J21OCTBOMLHRGK1
-0BA1609J21OCTLHRLAXGK1
-0BA1509J17MARLAXLHRGK1
-0BA135J18MARLHRBOMGK1`,
+      `1- 0BA134J21OCTBOMLHRGK1
+2- 0BA1609J21OCTLHRLAXGK1
+3- 0BA1509J17MARLAXLHRGK1
+4- 0BA135J18MARLHRBOMGK1`,
     r.individual
   );
   check("same-day connection untouched (21OCT)", !/BA 1609 22OCT/.test(r.itinerary), r.itinerary);

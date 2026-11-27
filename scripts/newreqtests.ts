@@ -3,6 +3,7 @@ import { shouldAutoRunAi } from "../src/lib/ai";
 import { saveLearnedClass, clearLearnedClasses } from "../src/lib/cabinClasses";
 import { canSaveItinerary, learnItinerary, findLearnedItinerary, forgetItineraryForText, clearLearned } from "../src/lib/learning";
 import { shouldPrintOperatedBy } from "../src/lib/sabre";
+import { ocrCleanText } from "../src/lib/parser";
 
 function assert(condition: boolean, msg: string) {
   if (!condition) {
@@ -18,6 +19,27 @@ assert(!shouldPrintOperatedBy("AS", "ALASKA"), "AS and ALASKA are same carrier")
 assert(!shouldPrintOperatedBy("AF", "Air France"), "AF and Air France are same carrier");
 assert(!shouldPrintOperatedBy("LX", "Swiss"), "LX and Swiss are same carrier");
 assert(!shouldPrintOperatedBy("LX", "SWISS INTERNATIONAL AIR LINES"), "LX and Swiss International Air Lines are same carrier");
+
+// A carrier label immediately followed by a clock must not be parsed as a
+// flight number (e.g. OCR text: "+ Swiss 4:50 AM"). Leg route rows remain the
+// only route evidence until the AI can resolve the missing scheduled numbers.
+const swissCardOcr = `$1,488 Off Retail AWD\n+ Swiss 4:50 AM — 5:30 PM · 23h 10m · BLR to MIA via ZRH\nBangalore (BLR) to Zürich (ZRH) · Mon, Dec 14\nLX 141 (Operated by Swiss)\n4:50 AM to 10:50 AM (10h 30m)\nAirbus A330-300 | Business Class (J)\n2h Layover · Zürich, Switzerland. This is a connecting flight in ZRH.\nZürich (ZRH) to Miami (MIA) · Mon, Dec 14\nLX 64 (Operated by Swiss)\n12:50 PM to 5:30 PM (10h 40m)\nBoeing 777-300ER | Business Class (Z)`;
+const swissCardResult = convert(swissCardOcr, null);
+assert(swissCardResult.segments.length === 2, `Swiss search card yields both legs, got ${swissCardResult.segments.length}`);
+assert(!swissCardResult.segments.some((s) => s.airline === "LX" && s.num === "4"), "Swiss 4:50 AM is recognized as a time, never bogus flight LX 4");
+assert(swissCardResult.itinerary === `1 LX 141 14DEC BLR ZRH 450A 1050A 333 10.30 0 N  CABIN-BUSINESS\n2 LX 64 14DEC ZRH MIA 1250P 530P 77W 10.40 0 N  CABIN-BUSINESS\n\n<--additional-->\n1 LX 141J 14DEC\n2 LX 64Z 14DEC`, "Swiss card produces both exact Sabre legs with separate classes and equipment");
+assert(swissCardResult.outbound === "0LX141J14DECBLRZRHNN1§0LX64Z14DECZRHMIANN1", "Swiss connection outbound chain contains both NN1 sells");
+assert(swissCardResult.individual === "1- 0LX141J14DECBLRZRHGK1\n2- 0LX64Z14DECZRHMIAGK1", "Swiss individual sells contain both numbered GK1 legs");
+
+// Raw Tesseract output captured from the user's screenshot (including the
+// merged card-row order, summary durations, OCR noise, and O→0 class confusion).
+// This prevents a clean, hand-normalized fixture from hiding OCR-path bugs.
+const fiveLegOcr = `al i . 7:25 AM 6:35 PM (12-04) 24h 40m MIA to BLR YYZ, DXB LS\n$7,492 @ Emirates, Air Canada\nLJ 8:20 PM (12-14) 9:50 AM (12-15) 24h Om BLR to MIA DXB 9\nMiami (MIA) to Bengaluru (BLR) on Thu, Dec 3 eo\n& Miami (MIA) to Toronto (YYZ) on Thu, Dec 3 7:25 AM to 10:39 AM (3h 14m)\nAir Canada 1643 (operated by Air Canada Rouge) Airbus A321 Business (P) # ¥{\n——— LAYOVER IN YYZ (3H 16M) ———\na Toronto (YYZ) to Dubai (DXB) on Thu, Dec 3 1:55 PM to 11:40 AM on Fri, Dec 4 (12h 45m)\nEmirates Emirates 242 Airbus A380 Business (0) ff\n———— LAYOVER IN DXB (1H 55M) ———\na Dubai (DXB) to Bengaluru (BLR) on Fri, Dec 4 1:35 PM to 6:35 PM (3h 30m)\nEmicates Emirates 566 Boeing 777 Business (0) ¥{\nBengaluru (BLR) to Miami (MIA) on Mon, Dec 14 9\na Bengaluru (BLR) to Dubai (DXB) on Mon, Dec 14 8:20 PM to 11:00 PM (4h 10m)\nEmirates Emirates 567 Boeing 777 Business (0) {\n——— LAYOVER IN DXB (3H 15M) ———\na Dubai (DXB) to Miami (MIA) on Tue, Dec 15 2:15 AM to 9:50 AM (16h 35m)\nEmicates Emirates 213 Boeing 777 Business (0) ¥{`;
+const fiveLegResult = convert(ocrCleanText(fiveLegOcr), null);
+assert(fiveLegResult.itinerary === `1 AC 1643 3DEC MIA YYZ 725A 1039A 321 3.14 0 N  CABIN-BUSINESS\n*MIA-YYZ OPERATED BY AIR CANADA ROUGE\n2 EK 242 3DEC YYZ DXB 155P 1140A¥1 380 12.45 0 N  CABIN-BUSINESS\n3 EK 566 4DEC DXB BLR 135P 635P 777 3.30 0 N  CABIN-BUSINESS\n4 EK 567 14DEC BLR DXB 820P 1100P 777 4.10 0 N  CABIN-BUSINESS\n5 EK 213 15DEC DXB MIA 215A 950A 777 16.35 0 N  CABIN-BUSINESS\n\n<--additional-->\n1 AC 1643P 3DEC\n2 EK 242O 3DEC\n3 EK 566O 4DEC\n4 EK 567O 14DEC\n5 EK 213O 15DEC`, "Five-leg itinerary keeps per-flight dates, durations, classes, equipment and Rouge operator");
+assert(fiveLegResult.outbound === "0AC1643P3DECMIAYYZNN1§0EK242O3DECYYZDXBNN1§0EK566O4DECDXBBLRNN1", "Five-leg outbound chain has the three outbound flights");
+assert(fiveLegResult.inbound === "0EK567O14DECBLRDXBNN1§0EK213O15DECDXBMIANN1", "Five-leg inbound chain has the two return flights");
+assert(fiveLegResult.individual === "1- 0AC1643P3DECMIAYYZGK1\n2- 0EK242O3DECYYZDXBGK1\n3- 0EK566O4DECDXBBLRGK1\n4- 0EK567O14DECBLRDXBGK1\n5- 0EK213O15DECDXBMIAGK1", "Five individual GK1 entries remain numbered in itinerary order");
 assert(shouldPrintOperatedBy("AS", "Horizon Air"), "AS and Horizon Air are different (regional subsidiary)");
 assert(shouldPrintOperatedBy("AF", "Indigo"), "AF and Indigo are different");
 assert(shouldPrintOperatedBy("UA", "SkyWest Airlines"), "UA and SkyWest are different");

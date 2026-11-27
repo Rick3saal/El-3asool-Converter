@@ -1859,11 +1859,11 @@ export default function App() {
                 {showCard("individual") && (
                   <OutputCard
                     title="INDIVIDUAL"
-                    titleAttr="One GK1 sell entry per flight — in itinerary order"
+                    titleAttr="One GK1 sell entry per flight. The leading N- is list numbering, not part of the Sabre command."
                     text={liveResult.individual}
                     emptyText="—"
                     copied={copied === "ind"}
-                    onCopy={() => void handleCopy("ind", liveResult.individual)}
+                    onCopy={() => void handleCopy("ind", liveResult.individual.replace(/^\d+- /gm, ""))}
                     wrap={view.wrap}
                     onFocus={split && view.tab === "all" ? () => setViewPref("tab", "individual") : undefined}
                     className={cn(split && "lg:min-h-0", split && "lg:flex-1")}

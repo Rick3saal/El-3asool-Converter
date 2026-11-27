@@ -58,6 +58,10 @@ export function ocrCleanText(t: string): string {
   s = s.replace(/(?<=:|\d)[Oo](\d)/g, "0$1");
   s = s.replace(/(\d)[lI|](?=:|\d)/g, "$11");
   s = s.replace(/(?<=:|\d)[lI|](\d)/g, "1$1");
+  // OCR commonly reads the letter O in a cabin's booking class as zero.
+  // Restrict this repair to a printed cabin label so genuine digits elsewhere
+  // (prices, dates, times) remain untouched.
+  s = s.replace(/\b((?:first|business|economy|premium(?:\s+economy)?)(?:\s+class)?)\s*\(\s*0\s*\)/gi, "$1 (O)");
   return s;
 }
 
@@ -476,7 +480,7 @@ function findCores(text: string, opbyRanges: Array<[number, number]>): Core[] {
     const code = airlineFromName(key);
     if (!code) continue;
     const re = new RegExp(
-      `(?<![A-Za-z0-9])(?:${escapeRe(key)})\\s*(?:\\([A-Z]{2}\\))?\\s*(?:[-–—]\\s*)?(\\d{1,4})(?![0-9])`,
+      `(?<![A-Za-z0-9])(?:${escapeRe(key)})\\s*(?:\\([A-Z]{2}\\))?\\s*(?:[-–—]\\s*)?(\\d{1,4})(?![0-9]|\\s*:)`,
       "gi"
     );
     let m: RegExpExecArray | null;
@@ -491,7 +495,7 @@ function findCores(text: string, opbyRanges: Array<[number, number]>): Core[] {
     }
   }
 
-  const codeRe = /(?<![A-Za-z0-9])([A-Z0-9]{2})\)?(?:\*|\s*\*|\*\s*|[\s-])?(\d{1,4})(?![0-9])/g;
+  const codeRe = /(?<![A-Za-z0-9])([A-Z0-9]{2})\)?(?:\*|\s*\*|\*\s*|[\s-])?(\d{1,4})(?![0-9]|\s*:)/g;
   let m: RegExpExecArray | null;
   const aircraftSpans = findAircraftTokens(text).map((a) => [a.start, a.end] as const);
   const inAircraft = (pos: number, end: number) =>
@@ -731,6 +735,11 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
     }
     return lo;
   };
+  // Layover cues and their durations may be assigned to different flight
+  // cores by the nearest-core rule, so track these source lines globally.
+  const layoverLines = new Set(
+    toks.filter((t) => t.kind === "LAYOVER" || t.kind === "STOP").map((t) => lineOf(t.start))
+  );
 
   /* paragraphs (blank-line separated blocks) */
   interface Para {
@@ -865,13 +874,22 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
     for (const ci of pr.coreIdx) {
       if (lineOf(cores[ci].start) === tLine) return ci;
     }
-    // otherwise the most recent flight printed above it in this paragraph
-    let owner = -1;
+    // OCR card layouts often place route, date, times and duration ABOVE the
+    // carrier/flight-number line, and may remove every blank line. Assign each
+    // field to the nearest flight core in either direction. Layover durations
+    // are explicitly excluded later using their source line, so they cannot
+    // leak to a neighboring flight just because its core is closer.
+    let owner = pr.coreIdx[0];
+    let bestGap = Infinity;
     for (const ci of pr.coreIdx) {
-      if (cores[ci].start < t.start) owner = ci;
+      const core = cores[ci];
+      const gap = core.start >= t.end ? core.start - t.end : t.start >= core.end ? t.start - core.end : 0;
+      if (gap < bestGap) {
+        bestGap = gap;
+        owner = ci;
+      }
     }
-    // nothing above → it heads the paragraph's first flight
-    return owner === -1 ? pr.coreIdx[0] : owner;
+    return owner;
   };
 
   for (const t of toks) {
@@ -1234,11 +1252,6 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
      * when it is printed physically close to a layover line. */
     const els = own("ELAPSED").sort((a, b) => tokDist(a, core) - tokDist(b, core));
     if (els.length > 0) {
-      const layoverLines = new Set(
-        bag
-          .filter((t) => t.kind === "LAYOVER" || t.kind === "STOP")
-          .map((t) => lineOf(t.start))
-      );
       const good = els.filter((e) => !layoverLines.has(lineOf(e.start)));
       if (good.length > 0) {
         w.elapsed = good[0].elapsed;
