@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "./utils/cn";
-import { assembleFromSegments, convertFlights, convertToSabre } from "./lib/converter";
+import { assembleFromSegments, convertFlights, convertToSabre, mergeAiFallback } from "./lib/converter";
 import { saveLearnedClass } from "./lib/cabinClasses";
 import type { Cabin, ConverterResult, Issue, Segment } from "./lib/types";
 import { ocrImage } from "./lib/ocr";
@@ -934,10 +934,15 @@ export default function App() {
         // Transient provider failures (503 UNAVAILABLE, 429, network drops) are
         // retried with exponential backoff and then across the fallback models.
         // The user sees a calm "busy / retrying" note instead of a raw error.
-        const flights = await extractFlightsWithAI(rawText, ai, {
+        const extractedFlights = await extractFlightsWithAI(rawText, ai, {
           onAttempt: (info) => setAiRetry(info.message),
         });
         setAiRetry("");
+        // AI is useful for unfamiliar layouts and missing fields, but the local
+        // reader owns anything it can tie to an individual flight row. This
+        // prevents journey-summary clocks (e.g. Swiss 5:30 PM) replacing a
+        // leg's printed arrival (AI 2409 8:50 AM).
+        const flights = mergeAiFallback(rawText, extractedFlights);
         const out = convertFlights(flights, fallbackCabin);
         setResult(out);
 

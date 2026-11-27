@@ -1,4 +1,4 @@
-import { convertToSabre as convert } from "../src/lib/converter";
+import { convertToSabre as convert, mergeAiFallback } from "../src/lib/converter";
 import { shouldAutoRunAi } from "../src/lib/ai";
 import { saveLearnedClass, clearLearnedClasses } from "../src/lib/cabinClasses";
 import { canSaveItinerary, learnItinerary, findLearnedItinerary, forgetItineraryForText, clearLearned } from "../src/lib/learning";
@@ -64,6 +64,35 @@ assert(uaSwissResult.itinerary === `1 UA 2231 5DEC MIA EWR 242P 553P 7M9 3.11 0 
 assert(uaSwissResult.outbound === "0UA2231J5DECMIAEWRNN1§0UA82J5DECEWRDELNN1§0AI2409D7DECDELBLRNN1", "United/Air India outbound three-leg chain matches sequence");
 assert(uaSwissResult.inbound === "0LX141Z14DECBLRZRHNN1§0LX64Z14DECZRHMIANN1", "Swiss inbound two-leg chain preserves Z class");
 assert(uaSwissResult.individual === "1- 0UA2231J5DECMIAEWRGK1\n2- 0UA82J5DECEWRDELGK1\n3- 0AI2409D7DECDELBLRGK1\n4- 0LX141Z14DECBLRZRHGK1\n5- 0LX64Z14DECZRHMIAGK1", "All five numbered GK1 commands match the requested output");
+
+// AI once learned Swiss's journey-summary 5:30 PM as AI 2409's arrival.
+// Verify both a manual AI fallback and that stale browser memory cannot replace
+// the explicit 8:50 AM arrival printed in AI 2409's own leg row.
+const staleAiFlights = uaSwissResult.segments.map((segment, index) => ({
+  airline: segment.airline,
+  number: segment.num,
+  origin: segment.origin,
+  dest: segment.dest,
+  date: segment.date,
+  dep: segment.dep,
+  arr: index === 2 ? 17 * 60 + 30 : segment.arr,
+  arrDay: segment.arrDay,
+  cabin: segment.cabin,
+  bookingClass: segment.bookingClass,
+  equip: segment.equip,
+  equipRaw: segment.equipRaw,
+  elapsed: segment.elapsed,
+  elapsedExplicit: true,
+  operatedBy: segment.operatedBy,
+  order: index,
+  direction: segment.direction,
+}));
+const normalizedSwissText = ocrCleanText(uaSwissOcr);
+assert(mergeAiFallback(normalizedSwissText, staleAiFlights)[2]?.arr === 8 * 60 + 50, "AI fallback cannot replace source-row arrival with Swiss summary clock");
+clearLearned();
+assert(learnItinerary(normalizedSwissText, staleAiFlights) !== null, "Seed stale AI itinerary memory for screenshot regression");
+assert(convert(normalizedSwissText, null).segments[2]?.arr === 8 * 60 + 50, "Cached AI 5:30 PM cannot override the current 8:50 AM leg row");
+clearLearned();
 assert(shouldPrintOperatedBy("AS", "Horizon Air"), "AS and Horizon Air are different (regional subsidiary)");
 assert(shouldPrintOperatedBy("AF", "Indigo"), "AF and Indigo are different");
 assert(shouldPrintOperatedBy("UA", "SkyWest Airlines"), "UA and SkyWest are different");
