@@ -66,15 +66,21 @@ export function convertToSabre(rawText: string, fallbackCabin: Cabin | null): Co
 }
 
 /**
- * Merge AI/cache fields into a deterministic parse. For every matching flight,
- * values found locally win; the fallback only fills missing values. Preserve
- * locally found flights even when the model omitted them, then append flights
- * that only the fallback identified.
+ * Merge AI/cache fields into a deterministic parse. For matching flight IDs,
+ * values found locally win; fallback only fills gaps. A local OCR candidate
+ * with a different ID but the exact same route/date/times as an AI leg is a
+ * duplicate reading of that physical leg, not an extra segment; prefer the AI
+ * identity in that case. Keep other local flights and append AI-only flights.
  */
 export function mergeSourceFlights(source: RawFlight[], fallback: RawFlight[]): RawFlight[] {
   if (source.length === 0) return fallback.map((flight) => ({ ...flight }));
+  const samePhysicalLeg = (a: RawFlight, b: RawFlight) =>
+    !!a.origin && !!a.dest && a.origin === b.origin && a.dest === b.dest &&
+    !!a.date && !!b.date && a.date.day === b.date.day && a.date.month === b.date.month &&
+    a.dep !== undefined && a.dep === b.dep && a.arr !== undefined && a.arr === b.arr;
   const usedFallback = new Set<number>();
-  const merged = source.map((local, localIndex) => {
+  const merged: RawFlight[] = [];
+  source.forEach((local, localIndex) => {
     const candidates = fallback
       .map((flight, index) => ({ flight, index }))
       .filter(({ flight, index }) =>
@@ -90,10 +96,17 @@ export function mergeSourceFlights(source: RawFlight[], fallback: RawFlight[]): 
         return routeA - routeB || Math.abs(a.flight.order - local.order) - Math.abs(b.flight.order - local.order);
       });
     const match = candidates[0];
-    if (!match) return { ...local, order: localIndex };
+    if (!match) {
+      // A different OCR flight ID on the same fully matching route/schedule is
+      // likely noise (e.g. a bogus AD 2 duplicating the printed SV 867 row).
+      // Let the AI's identity stand, and omit this duplicate local candidate.
+      if (fallback.some((flight, index) => !usedFallback.has(index) && samePhysicalLeg(local, flight))) return;
+      merged.push({ ...local, order: localIndex });
+      return;
+    }
     usedFallback.add(match.index);
     const other = match.flight;
-    return {
+    merged.push({
       ...other,
       ...local,
       airline: local.airline || other.airline,
@@ -115,7 +128,7 @@ export function mergeSourceFlights(source: RawFlight[], fallback: RawFlight[]): 
       direction: local.direction ?? other.direction,
       directionHint: local.directionHint ?? other.directionHint,
       order: local.order ?? localIndex,
-    };
+    });
   });
 
   fallback.forEach((flight, index) => {
@@ -123,7 +136,8 @@ export function mergeSourceFlights(source: RawFlight[], fallback: RawFlight[]): 
     const identityAlreadyLocal = source.some((local) =>
       local.airline === flight.airline && local.number === flight.number
     );
-    if (!identityAlreadyLocal) merged.push({ ...flight, order: merged.length });
+    const physicalLegAlreadyLocal = source.some((local) => samePhysicalLeg(local, flight));
+    if (!identityAlreadyLocal && !physicalLegAlreadyLocal) merged.push({ ...flight, order: merged.length });
   });
   return merged;
 }

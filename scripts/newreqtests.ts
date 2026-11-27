@@ -1,4 +1,4 @@
-import { convertToSabre as convert, mergeAiFallback } from "../src/lib/converter";
+import { convertToSabre as convert, mergeAiFallback, mergeSourceFlights } from "../src/lib/converter";
 import { shouldAutoRunAi } from "../src/lib/ai";
 import { saveLearnedClass, clearLearnedClasses } from "../src/lib/cabinClasses";
 import { canSaveItinerary, learnItinerary, findLearnedItinerary, forgetItineraryForText, clearLearned } from "../src/lib/learning";
@@ -93,6 +93,18 @@ clearLearned();
 assert(learnItinerary(normalizedSwissText, staleAiFlights) !== null, "Seed stale AI itinerary memory for screenshot regression");
 assert(convert(normalizedSwissText, null).segments[2]?.arr === 8 * 60 + 50, "Cached AI 5:30 PM cannot override the current 8:50 AM leg row");
 clearLearned();
+const sv867PhysicalLeg = {
+  airline: "SV", number: "867", origin: "BLR", dest: "JED",
+  date: { day: 27, month: 12 }, dep: 11 * 60 + 30, arr: 15 * 60 + 25,
+  arrDay: 0 as const, cabin: "BUSINESS" as const, bookingClass: "I",
+  equip: "330", elapsed: 385, elapsedExplicit: true, order: 0, direction: "IN" as const,
+};
+const duplicateAdNoise = {
+  ...sv867PhysicalLeg, airline: "AD", number: "2", equip: "73H",
+  cabin: "ECONOMY" as const, bookingClass: "Y",
+};
+const deltaSaudiaMerge = mergeSourceFlights([duplicateAdNoise, sv867PhysicalLeg], [sv867PhysicalLeg]);
+assert(deltaSaudiaMerge.length === 1 && deltaSaudiaMerge[0]?.airline === "SV" && deltaSaudiaMerge[0]?.number === "867", "Duplicate AD 2 OCR noise collapses into the actual SV 867 leg");
 assert(shouldPrintOperatedBy("AS", "Horizon Air"), "AS and Horizon Air are different (regional subsidiary)");
 assert(shouldPrintOperatedBy("AF", "Indigo"), "AF and Indigo are different");
 assert(shouldPrintOperatedBy("UA", "SkyWest Airlines"), "UA and SkyWest are different");
