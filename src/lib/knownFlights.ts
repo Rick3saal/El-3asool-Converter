@@ -137,6 +137,12 @@ export const KNOWN_FLIGHTS: KnownFlight[] = [
     dest: "JFK",
     operator: "BRITISH AIRWAYS",
   },
+  // User confirmed these Delta-marketed starred flights are Air France-operated.
+  // Their equipment is filled by AF's non-live route priors below.
+  { airline: "DL", flightNumber: "8698", origin: "MIA", dest: "CDG", operator: "AIR FRANCE" },
+  { airline: "DL", flightNumber: "8461", origin: "CDG", dest: "BLR", operator: "AIR FRANCE" },
+  { airline: "DL", flightNumber: "8471", origin: "BLR", dest: "CDG", operator: "AIR FRANCE" },
+  { airline: "DL", flightNumber: "8699", origin: "CDG", dest: "MIA", operator: "AIR FRANCE" },
 ];
 
 export interface FleetRouteGuess {

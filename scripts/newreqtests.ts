@@ -146,6 +146,13 @@ const routeEquipmentGds = convert(`1 BA 641 J 28FEB ATH LHR 755A 1010A\n2 AA*699
 assert(routeEquipmentGds.segments.map((s) => `${s.airline}${s.num}:${s.equip}`).join(",") === "BA641:32N,AA6994:772,BA112:772,BA396:32N", "Missing aircraft in GDS-format itinerary are filled from route priors");
 assert(routeEquipmentGds.segments.find((s) => s.airline === "AA")?.operatedBy === "BRITISH AIRWAYS", "Known AA 6994 codeshare resolves its BA operator before fleet lookup");
 assert(routeEquipmentGds.failedEquipmentFlights.length === 0, "Known routes avoid online aircraft lookup");
+saveLearnedClass("DL", "Z", "BUSINESS");
+const deltaAfCodeshares = convert(`1 DL*8698 Z 03DEC MIA CDG 800P 1055A 1\n2 DL*8461 Z 04DEC CDG BLR 1235P 250A 1\n3 DL*8471 Z 14DEC BLR CDG 445A 1105A\n4 DL*8699 Z 14DEC CDG MIA 110P 540P\n5 DL 1211 Z 15DEC MIA ATL 713A 914A`, null);
+assert(deltaAfCodeshares.segments.map((s) => `${s.airline}${s.num}:${s.equip}`).join(",") === "DL8698:77W,DL8461:77W,DL8471:77W,DL8699:77W,DL1211:738", "Confirmed DL/Air France codeshares use offline AF route priors");
+assert(deltaAfCodeshares.failedEquipmentFlights.length === 0 && deltaAfCodeshares.failedOperatorFlights.length === 0, "Delta/Air France codeshares need no aircraft or operator lookup");
+assert(deltaAfCodeshares.segments.filter((s) => s.num !== "1211").every((s) => s.operatedBy === "AIR FRANCE"), "Four starred Delta legs resolve to Air France");
+assert(!shouldAutoRunAi(deltaAfCodeshares), "Known DL Z cabin and route aircraft avoid an AI call");
+clearLearnedClasses();
 
 assert(shouldPrintOperatedBy("AS", "Horizon Air"), "AS and Horizon Air are different (regional subsidiary)");
 assert(shouldPrintOperatedBy("AF", "Indigo"), "AF and Indigo are different");
