@@ -28,7 +28,7 @@ assert(swissCardResult.segments.length === 2, `Swiss search card yields both leg
 assert(!swissCardResult.segments.some((s) => s.airline === "LX" && s.num === "4"), "Swiss 4:50 AM is recognized as a time, never bogus flight LX 4");
 assert(swissCardResult.itinerary === `1 LX 141 14DEC BLR ZRH 450A 1050A 333 10.30 0 N  CABIN-BUSINESS\n2 LX 64 14DEC ZRH MIA 1250P 530P 77W 10.40 0 N  CABIN-BUSINESS\n\n<--additional-->\n1 LX 141J 14DEC\n2 LX 64Z 14DEC`, "Swiss card produces both exact Sabre legs with separate classes and equipment");
 assert(swissCardResult.outbound === "0LX141J14DECBLRZRHNN1§0LX64Z14DECZRHMIANN1", "Swiss connection outbound chain contains both NN1 sells");
-assert(swissCardResult.individual === "0LX141J14DECBLRZRHGK1\n0LX64Z14DECZRHMIAGK1", "Swiss individual sells contain both GK1 legs");
+assert(swissCardResult.individual === "1- 0LX141J14DECBLRZRHGK1\n2- 0LX64Z14DECZRHMIAGK1", "Swiss individual sells contain both numbered GK1 legs");
 
 // Return itinerary with three outbound legs and two inbound legs. Summary
 // journey durations and connection waits are intentionally present to ensure
@@ -38,7 +38,7 @@ const fiveLegResult = convert(fiveLegOcr, null);
 assert(fiveLegResult.itinerary === `1 AC 1643 3DEC MIA YYZ 725A 1039A 321 3.14 0 N  CABIN-BUSINESS\n*MIA-YYZ OPERATED BY AIR CANADA ROUGE\n2 EK 242 3DEC YYZ DXB 155P 1140A¥1 380 12.45 0 N  CABIN-BUSINESS\n3 EK 566 4DEC DXB BLR 135P 635P 777 3.30 0 N  CABIN-BUSINESS\n4 EK 567 14DEC BLR DXB 820P 1100P 777 4.10 0 N  CABIN-BUSINESS\n5 EK 213 15DEC DXB MIA 215A 950A 777 16.35 0 N  CABIN-BUSINESS\n\n<--additional-->\n1 AC 1643P 3DEC\n2 EK 242O 3DEC\n3 EK 566O 4DEC\n4 EK 567O 14DEC\n5 EK 213O 15DEC`, "Five-leg itinerary keeps per-flight dates, durations, classes, equipment and Rouge operator");
 assert(fiveLegResult.outbound === "0AC1643P3DECMIAYYZNN1§0EK242O3DECYYZDXBNN1§0EK566O4DECDXBBLRNN1", "Five-leg outbound chain has the three outbound flights");
 assert(fiveLegResult.inbound === "0EK567O14DECBLRDXBNN1§0EK213O15DECDXBMIANN1", "Five-leg inbound chain has the two return flights");
-assert(fiveLegResult.individual === "0AC1643P3DECMIAYYZGK1\n0EK242O3DECYYZDXBGK1\n0EK566O4DECDXBBLRGK1\n0EK567O14DECBLRDXBGK1\n0EK213O15DECDXBMIAGK1", "Five individual GK1 entries remain in itinerary order");
+assert(fiveLegResult.individual === "1- 0AC1643P3DECMIAYYZGK1\n2- 0EK242O3DECYYZDXBGK1\n3- 0EK566O4DECDXBBLRGK1\n4- 0EK567O14DECBLRDXBGK1\n5- 0EK213O15DECDXBMIAGK1", "Five individual GK1 entries remain numbered in itinerary order");
 assert(shouldPrintOperatedBy("AS", "Horizon Air"), "AS and Horizon Air are different (regional subsidiary)");
 assert(shouldPrintOperatedBy("AF", "Indigo"), "AF and Indigo are different");
 assert(shouldPrintOperatedBy("UA", "SkyWest Airlines"), "UA and SkyWest are different");

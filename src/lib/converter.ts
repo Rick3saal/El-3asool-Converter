@@ -323,7 +323,9 @@ export function assembleFromSegments(
       : "";
   const outbound = outLines.join("\n");
   const inbound = inLines.join("\n");
-  const individual = indLines.join("\n");
+  // The leading list number is explanatory only; the Sabre command itself
+  // starts after the "N- " prefix.
+  const individual = indLines.map((line, i) => `${i + 1}- ${line}`).join("\n");
 
   const internal = validateOutput(segments, outSegs, inSegs, indLines, mainLines, addLines);
   for (const v of internal) issues.push(v);
