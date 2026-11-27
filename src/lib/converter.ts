@@ -24,6 +24,7 @@ import {
 import { parseExplicitAircraftString } from "./aircraft";
 import { lookupCabinForClass, provisionalCabinFor } from "./cabinClasses";
 import {
+  inferFleetRouteEquipment,
   inferRouteEquipment,
   lookupKnownFlight,
 } from "./knownFlights";
@@ -279,6 +280,8 @@ export function convertFlights(
       });
     }
 
+    const elapsed = resolveElapsed(f.origin!, f.dest!, f.dep!, f.arr!, f.elapsed, f.date?.month);
+
     /* Equipment lookup */
     const directEquip = (f.equip && f.equip !== "---")
       ? f.equip
@@ -291,8 +294,35 @@ export function convertFlights(
       if (known?.equip) equip = known.equip;
     }
     if (!equip || equip === "---") {
-      const inferred = inferRouteEquipment(f.airline, f.origin, f.dest, operatedBy || f.operatedBy);
+      const effectiveOperator = operatedBy || f.operatedBy;
+      const fleetPrior = inferFleetRouteEquipment(
+        f.airline,
+        f.origin,
+        f.dest,
+        effectiveOperator,
+        elapsed.minutes,
+        f.date?.month,
+        !!f.hasStarFlag
+      );
+      const inferred = inferRouteEquipment(
+        f.airline,
+        f.origin,
+        f.dest,
+        effectiveOperator,
+        elapsed.minutes,
+        f.date?.month,
+        !!f.hasStarFlag
+      );
       if (inferred) equip = inferred;
+      if (fleetPrior && fleetPrior.equip === inferred) {
+        const alternatives = fleetPrior.alternatives.length > 0
+          ? ` (alternates: ${fleetPrior.alternatives.join(", ")})`
+          : "";
+        issues.push({
+          level: "info",
+          text: `aircraft estimate for ${label}${route}: ${fleetPrior.equip}${alternatives}; route/fleet guidance, not live-verified.`,
+        });
+      }
     }
     if (!equip || equip === "---") {
       equip = "---";
@@ -305,7 +335,6 @@ export function convertFlights(
       });
     }
 
-    const elapsed = resolveElapsed(f.origin!, f.dest!, f.dep!, f.arr!, f.elapsed, f.date?.month);
     // Note: "duration not stated in the source" warning removed per requirement 6
 
     segments.push({
