@@ -6,6 +6,7 @@
  *
  * Rules:
  *  - A line with a class letter (e.g. Z on AF 191) is NEVER "cabin not stated".
+ *  - Verified airline-specific mappings take priority; learned mappings fill unsupported pairs.
  *  - If the pair is not in confirmed or learned, prompt: "What cabin is <AIRLINE> class <LETTER>?"
  *  - Save the answer as a learned row: "<AIRLINE>: <LETTER> = <CABIN>".
  *  - Class letter is kept exactly as given; never replaced by a default letter.
@@ -28,6 +29,15 @@ export function cabinFromName(name: string): Cabin {
 }
 
 export const CONFIRMED_CABIN_CLASSES: Record<string, Record<string, Cabin>> = {
+  // Air Canada P is a Business booking class (including the supplied AC 1643 itinerary).
+  AC: {
+    P: "BUSINESS",
+  },
+  // Emirates uses I and O in Business; O is not the global Economy default here.
+  EK: {
+    I: "BUSINESS",
+    O: "BUSINESS",
+  },
   // British Airways confirmed booking classes (T, W, E, Z = World Traveller Plus / Premium Economy)
   BA: {
     F: "FIRST",
@@ -200,14 +210,15 @@ export function lookupCabinForClass(airline: string, letter: string): Cabin | un
   const al = (airline || "").toUpperCase().trim();
   const cl = letter.toUpperCase().trim();
 
-  // 1. Learned table takes priority
-  const learned = getLearnedClasses().get(classKey(al, cl));
-  if (learned) return learned;
-
-  // 2. Confirmed airline-specific table
+  // 1. Verified airline-specific mappings outrank browser learning. This prevents
+  // a stale generic/global class guess from overriding carrier-specific facts.
   if (CONFIRMED_CABIN_CLASSES[al]?.[cl]) {
     return CONFIRMED_CABIN_CLASSES[al][cl];
   }
+
+  // 2. Learned mappings fill pairs not covered by confirmed carrier data.
+  const learned = getLearnedClasses().get(classKey(al, cl));
+  if (learned) return learned;
 
   // 3. Confirmed global default table
   if (CONFIRMED_CABIN_CLASSES.DEFAULT?.[cl]) {

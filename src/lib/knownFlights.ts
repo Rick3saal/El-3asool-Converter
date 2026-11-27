@@ -143,6 +143,12 @@ export const KNOWN_FLIGHTS: KnownFlight[] = [
   { airline: "DL", flightNumber: "8471", origin: "BLR", dest: "CDG", operator: "AIR FRANCE", equip: "789" },
   { airline: "DL", flightNumber: "8699", origin: "CDG", dest: "MIA", operator: "AIR FRANCE", equip: "77W" },
   { airline: "DL", flightNumber: "1211", origin: "MIA", dest: "ATL", operator: "DELTA AIR LINES", equip: "757" },
+  // User-provided schedule equipment for the MIA-YYZ-DXB-BLR itinerary.
+  { airline: "AC", flightNumber: "1643", origin: "MIA", dest: "YYZ", operator: "AIR CANADA ROUGE", equip: "321" },
+  { airline: "EK", flightNumber: "242", origin: "YYZ", dest: "DXB", operator: "EMIRATES", equip: "388" },
+  { airline: "EK", flightNumber: "566", origin: "DXB", dest: "BLR", operator: "EMIRATES", equip: "77W" },
+  { airline: "EK", flightNumber: "567", origin: "BLR", dest: "DXB", operator: "EMIRATES", equip: "77W" },
+  { airline: "EK", flightNumber: "213", origin: "DXB", dest: "MIA", operator: "EMIRATES", equip: "77L" },
 ];
 
 export interface FleetRouteGuess {
