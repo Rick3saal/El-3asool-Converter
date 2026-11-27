@@ -39,10 +39,25 @@ assert(swissCardResult.individual === "1- 0LX141J14DECBLRZRHGK1\n2- 0LX64Z14DECZ
 // This prevents a clean, hand-normalized fixture from hiding OCR-path bugs.
 const fiveLegOcr = `al i . 7:25 AM 6:35 PM (12-04) 24h 40m MIA to BLR YYZ, DXB LS\n$7,492 @ Emirates, Air Canada\nLJ 8:20 PM (12-14) 9:50 AM (12-15) 24h Om BLR to MIA DXB 9\nMiami (MIA) to Bengaluru (BLR) on Thu, Dec 3 eo\n& Miami (MIA) to Toronto (YYZ) on Thu, Dec 3 7:25 AM to 10:39 AM (3h 14m)\nAir Canada 1643 (operated by Air Canada Rouge) Airbus A321 Business (P) # ¥{\n——— LAYOVER IN YYZ (3H 16M) ———\na Toronto (YYZ) to Dubai (DXB) on Thu, Dec 3 1:55 PM to 11:40 AM on Fri, Dec 4 (12h 45m)\nEmirates Emirates 242 Airbus A380 Business (0) ff\n———— LAYOVER IN DXB (1H 55M) ———\na Dubai (DXB) to Bengaluru (BLR) on Fri, Dec 4 1:35 PM to 6:35 PM (3h 30m)\nEmicates Emirates 566 Boeing 777 Business (0) ¥{\nBengaluru (BLR) to Miami (MIA) on Mon, Dec 14 9\na Bengaluru (BLR) to Dubai (DXB) on Mon, Dec 14 8:20 PM to 11:00 PM (4h 10m)\nEmirates Emirates 567 Boeing 777 Business (0) {\n——— LAYOVER IN DXB (3H 15M) ———\na Dubai (DXB) to Miami (MIA) on Tue, Dec 15 2:15 AM to 9:50 AM (16h 35m)\nEmicates Emirates 213 Boeing 777 Business (0) ¥{`;
 const fiveLegResult = convert(ocrCleanText(fiveLegOcr), null);
-assert(fiveLegResult.itinerary === `1 AC 1643 3DEC MIA YYZ 725A 1039A 321 3.14 0 N  CABIN-BUSINESS\n*MIA-YYZ OPERATED BY AIR CANADA ROUGE\n2 EK 242 3DEC YYZ DXB 155P 1140A¥1 380 12.45 0 N  CABIN-BUSINESS\n3 EK 566 4DEC DXB BLR 135P 635P 777 3.30 0 N  CABIN-BUSINESS\n4 EK 567 14DEC BLR DXB 820P 1100P 777 4.10 0 N  CABIN-BUSINESS\n5 EK 213 15DEC DXB MIA 215A 950A 777 16.35 0 N  CABIN-BUSINESS\n\n<--additional-->\n1 AC 1643P 3DEC\n2 EK 242O 3DEC\n3 EK 566O 4DEC\n4 EK 567O 14DEC\n5 EK 213O 15DEC`, "Five-leg itinerary keeps per-flight dates, durations, classes, equipment and Rouge operator");
+assert(fiveLegResult.itinerary === `1 AC 1643 3DEC MIA YYZ 725A 1039A 321 3.14 0 N  CABIN-BUSINESS\n*MIA-YYZ OPERATED BY AIR CANADA ROUGE\n2 EK 242 3DEC YYZ DXB 155P 1140A¥1 388 12.45 0 N  CABIN-BUSINESS\n3 EK 566 4DEC DXB BLR 135P 635P 77W 3.30 0 N  CABIN-BUSINESS\n4 EK 567 14DEC BLR DXB 820P 1100P 77W 4.10 0 N  CABIN-BUSINESS\n5 EK 213 15DEC DXB MIA 215A 950A 77L 16.35 0 N  CABIN-BUSINESS\n\n<--additional-->\n1 AC 1643P 3DEC\n2 EK 242O 3DEC\n3 EK 566O 4DEC\n4 EK 567O 14DEC\n5 EK 213O 15DEC`, "Five-leg itinerary uses exact schedule equipment, dates, classes and Rouge operator");
 assert(fiveLegResult.outbound === "0AC1643P3DECMIAYYZNN1§0EK242O3DECYYZDXBNN1§0EK566O4DECDXBBLRNN1", "Five-leg outbound chain has the three outbound flights");
 assert(fiveLegResult.inbound === "0EK567O14DECBLRDXBNN1§0EK213O15DECDXBMIANN1", "Five-leg inbound chain has the two return flights");
 assert(fiveLegResult.individual === "1- 0AC1643P3DECMIAYYZGK1\n2- 0EK242O3DECYYZDXBGK1\n3- 0EK566O4DECDXBBLRGK1\n4- 0EK567O14DECBLRDXBGK1\n5- 0EK213O15DECDXBMIAGK1", "Five individual GK1 entries remain numbered in itinerary order");
+
+const pastedThreeLegs = convert(ocrCleanText(`1 AC*1643 P 04DEC MIA YYZ 725A 1039A\nAIR CANADA ROUGE &&\n2 EK 242 I 04DEC YYZ DXB 155P 1140A 1\n3 EK 566 I 05DEC DXB BLR 135P 635P`), null);
+assert(pastedThreeLegs.segments.length === 3, "Pasted source produces the three legs actually present; absent return lines are not invented");
+assert(pastedThreeLegs.segments.map((s) => s.equip).join(",") === "321,388,77W", "Pasted AC/EK GDS rows use exact schedule equipment locally");
+assert(pastedThreeLegs.segments[0]?.cabin === "BUSINESS", "Air Canada P maps to Business for AC 1643");
+assert(!shouldAutoRunAi(pastedThreeLegs), "Exact AC/EK schedule rows need no AI lookup");
+const fullGdsItinerary = convert(ocrCleanText(`1 AC*1643 P 04DEC MIA YYZ 725A 1039A\nAIR CANADA ROUGE &&\n2 EK 242 I 04DEC YYZ DXB 155P 1140A 1\n3 EK 566 I 05DEC DXB BLR 135P 635P\n4 EK 567 O 14DEC BLR DXB 820P 1100P\n5 EK 213 O 15DEC DXB MIA 215A 950A`), null);
+assert(fullGdsItinerary.segments.length === 5, "Adding the two return sell lines produces all five itinerary legs");
+assert(fullGdsItinerary.segments.map((s) => s.equip).join(",") === "321,388,77W,77W,77L", "All five supplied GDS aircraft codes are preserved");
+assert(fullGdsItinerary.segments.every((s) => s.cabin === "BUSINESS"), "AC P and EK I/O booking classes resolve to Business cabins");
+assert(fullGdsItinerary.segments.map((s) => s.bookingClass).join(",") === "P,I,I,O,O", "All supplied booking letters remain unchanged");
+saveLearnedClass("AC", "P", "FIRST");
+const conflictingLearnedClass = convert("1 AC*1643 P 04DEC MIA YYZ 725A 1039A\nAIR CANADA ROUGE", null);
+assert(conflictingLearnedClass.segments[0]?.cabin === "BUSINESS", "Verified Air Canada P mapping resists a stale learned FIRST guess");
+clearLearnedClasses();
 
 assert(
   ocrCleanText("Business Class (0) · Business Class (2) · Al 2409 · 9:50 PM*!") ===
@@ -146,6 +161,13 @@ const routeEquipmentGds = convert(`1 BA 641 J 28FEB ATH LHR 755A 1010A\n2 AA*699
 assert(routeEquipmentGds.segments.map((s) => `${s.airline}${s.num}:${s.equip}`).join(",") === "BA641:32N,AA6994:772,BA112:772,BA396:32N", "Missing aircraft in GDS-format itinerary are filled from route priors");
 assert(routeEquipmentGds.segments.find((s) => s.airline === "AA")?.operatedBy === "BRITISH AIRWAYS", "Known AA 6994 codeshare resolves its BA operator before fleet lookup");
 assert(routeEquipmentGds.failedEquipmentFlights.length === 0, "Known routes avoid online aircraft lookup");
+saveLearnedClass("DL", "Z", "BUSINESS");
+const deltaAfCodeshares = convert(`1 DL*8698 Z 03DEC MIA CDG 800P 1055A 1\n2 DL*8461 Z 04DEC CDG BLR 1235P 250A 1\n3 DL*8471 Z 14DEC BLR CDG 445A 1105A\n4 DL*8699 Z 14DEC CDG MIA 110P 540P\n5 DL 1211 Z 15DEC MIA ATL 713A 914A`, null);
+assert(deltaAfCodeshares.segments.map((s) => `${s.airline}${s.num}:${s.equip}`).join(",") === "DL8698:77W,DL8461:789,DL8471:789,DL8699:77W,DL1211:757", "Supplied Delta/Air France schedule equipment codes are used offline");
+assert(deltaAfCodeshares.failedEquipmentFlights.length === 0 && deltaAfCodeshares.failedOperatorFlights.length === 0, "Delta/Air France codeshares need no aircraft or operator lookup");
+assert(deltaAfCodeshares.segments.filter((s) => s.num !== "1211").every((s) => s.operatedBy === "AIR FRANCE"), "Four starred Delta legs resolve to Air France");
+assert(!shouldAutoRunAi(deltaAfCodeshares), "Known DL Z cabin and route aircraft avoid an AI call");
+clearLearnedClasses();
 
 assert(shouldPrintOperatedBy("AS", "Horizon Air"), "AS and Horizon Air are different (regional subsidiary)");
 assert(shouldPrintOperatedBy("AF", "Indigo"), "AF and Indigo are different");

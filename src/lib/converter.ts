@@ -287,11 +287,15 @@ export function convertFlights(
       ? f.equip
       : (f.equipRaw ? parseExplicitAircraftString(f.equipRaw, f.airline) : null);
     if (directEquip && directEquip !== "---") sourceStated.equip = true;
+    const knownAircraft = lookupKnownFlight(f.airline, f.number, f.origin, f.dest)?.equip;
+    // A broad family label such as "Boeing 777" or "Airbus A380" is less
+    // precise than a user-supplied exact-flight schedule code (77L/77W/388).
+    // Keep an explicitly identified variant or 3-character code authoritative.
+    const broadFamily = directEquip === "777" || directEquip === "380";
     let learnedEquip = !directEquip ? lookupLearnedAircraft(f.equipRaw) : undefined;
-    let equip = directEquip || learnedEquip;
+    let equip = broadFamily && knownAircraft ? knownAircraft : directEquip || learnedEquip;
     if (!equip || equip === "---") {
-      const known = lookupKnownFlight(f.airline, f.number, f.origin, f.dest);
-      if (known?.equip) equip = known.equip;
+      if (knownAircraft) equip = knownAircraft;
     }
     if (!equip || equip === "---") {
       const effectiveOperator = operatedBy || f.operatedBy;
