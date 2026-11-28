@@ -4,7 +4,7 @@ import { saveLearnedClass, clearLearnedClasses } from "../src/lib/cabinClasses";
 import { canSaveItinerary, learnItinerary, findLearnedItinerary, forgetItineraryForText, clearLearned } from "../src/lib/learning";
 import { shouldPrintOperatedBy } from "../src/lib/sabre";
 import { inferFleetRouteEquipment, inferRouteEquipment, lookupKnownFlight } from "../src/lib/knownFlights";
-import { ocrCleanText } from "../src/lib/parser";
+import { ocrCleanText, parseItineraryText } from "../src/lib/parser";
 
 function assert(condition: boolean, msg: string) {
   if (!condition) {
@@ -335,6 +335,34 @@ Boeing 777
 Economy (Y)`;
 const rNoDur = convert(noDurationText, null);
 assert(!rNoDur.issues.some((i) => i.text.toLowerCase().includes("duration not stated")), "Duration not stated warning never raised");
+
+console.log("=== Testing compact Sabre rows with attached RBDs and compressed airport pairs ===");
+const compactSabreText = `1 DL 389Z 03DEC Q DTWPVG SS1 1005A 315P 04DEC F /E\n2 DL6409Z 04DEC F PVGCAN SS1 915P 1210A 05DEC J /E\n3 DL6551Z 22DEC T CANPVG SS1 100P 300P /E\n4 DL 280Z 22DEC T PVGSEA SS1 525P 1205P /E\n5 DL1706Z 22DEC T SEADTW SS1 130P 850P /E`;
+const compactParsed = parseItineraryText(compactSabreText);
+assert(compactParsed.flights.length === 5, `All compact Sabre rows parsed locally, got ${compactParsed.flights.length}`);
+assert(compactParsed.flights.every((f) => f.bookingClass === "Z"), "Attached Z booking classes are preserved for all five flights");
+assert(compactParsed.flights.map((f) => f.direction).join(",") === "OUT,OUT,IN,IN,IN", "Long-stay return boundary splits the two outbound from three inbound legs");
+assert(compactParsed.flights[3]?.arrDay === 0, "PVG-SEA arrival uses same local date despite crossing midnight in UTC");
+const aiCorrupted = compactParsed.flights.map((f) => ({ ...f, bookingClass: "Y", direction: "OUT" as const }));
+const protectedCompact = mergeSourceFlights(compactParsed.flights, aiCorrupted);
+assert(protectedCompact.every((f) => f.bookingClass === "Z"), "AI fallback cannot replace printed Z booking classes with Y");
+assert(protectedCompact.map((f) => f.direction).join(",") === "OUT,OUT,IN,IN,IN", "AI fallback cannot flatten the inbound half into outbound");
+const compactResult = convert(compactSabreText, null);
+assert(compactResult.outbound.includes("DL389Z03DECDTWPVGNN1") && compactResult.outbound.includes("DL6409Z04DECPVGCANNN1"), "Outbound chain contains only the first two compact GDS sells");
+assert(compactResult.inbound.includes("DL6551Z22DECCANPVGNN1") && compactResult.inbound.includes("DL1706Z22DECSEADTWNN1"), "Inbound chain contains the final three compact GDS sells");
+
+const expandedRoundTrip = `Detroit (DTW) to Guangzhou (CAN) on Thu, Dec 3\nDetroit (DTW) to Shanghai (PVG) on Thu, Dec 3\n10:05 AM to 3:15 PM on Fri, Dec 4 (16h 10m)\nDelta 389\nAirbus A350\nBusiness (Z)\nLayover in PVG (6h 0m)\nShanghai (PVG) to Guangzhou (CAN) on Fri, Dec 4\n9:15 PM to 12:10 AM (2h 55m)\nDelta 6409 (operated by China Eastern)\nAirbus A321\nBusiness (Z)\nGuangzhou (CAN) to Detroit (DTW) on Tue, Dec 22\nGuangzhou (CAN) to Shanghai (PVG) on Tue, Dec 22\n1:00 PM to 3:00 PM (2h 0m)\nDelta 6551 (operated by Shanghai Airlines)\nBoeing 787\nBusiness (Z)\nLayover in PVG (2h 25m)\nShanghai (PVG) to Seattle (SEA) on Tue, Dec 22\n5:25 PM to 12:05 PM (10h 40m)\nDelta 280\nAirbus A350\nBusiness (Z)\nLayover in SEA (1h 25m)\nSeattle (SEA) to Detroit (DTW) on Tue, Dec 22\n1:30 PM to 8:50 PM on Tue, Dec 22 (4h 20m)\nDelta 1706\nBoeing 737\nFirst (Z)`;
+const expandedParsed = parseItineraryText(expandedRoundTrip);
+assert(expandedParsed.flights.length === 5, "Expanded itinerary parses all five legs locally");
+assert(expandedParsed.flights.map((f) => f.direction).join(",") === "OUT,OUT,IN,IN,IN", "Expanded reverse-route heading marks three inbound legs");
+assert(expandedParsed.flights.every((f) => f.bookingClass === "Z"), "Expanded Business/First labels preserve every Z booking class");
+assert(expandedParsed.flights[4]?.cabin === "FIRST", "Explicit First cabin on DL 1706 is retained independently of class Z");
+const expandedAiConflict = mergeSourceFlights(expandedParsed.flights, expandedParsed.flights.map((f) => ({ ...f, bookingClass: "Y", direction: "OUT" as const })));
+assert(expandedAiConflict.map((f) => f.direction).join(",") === "OUT,OUT,IN,IN,IN" && expandedAiConflict.every((f) => f.bookingClass === "Z"), "Expanded-source directions and classes beat stale AI memory");
+learnItinerary(expandedRoundTrip, expandedParsed.flights.map((f) => ({ ...f, bookingClass: "Y", direction: "OUT" as const })));
+const expandedFromStaleMemory = convert(expandedRoundTrip, null);
+assert(expandedFromStaleMemory.segments.map((s) => s.direction).join(",") === "OUT,OUT,IN,IN,IN" && expandedFromStaleMemory.segments.every((s) => s.bookingClass === "Z"), "Cached all-outbound/Y extraction cannot corrupt the expanded current source");
+forgetItineraryForText(expandedRoundTrip);
 
 console.log("=== Testing GDS Codeshare & Screenshot Scenarios ===");
 const dl8727Text = `1  DL*8727  Z 02MAR  LAX CDG  655P 250P¥1
