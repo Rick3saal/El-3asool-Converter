@@ -359,6 +359,10 @@ assert(expandedParsed.flights.every((f) => f.bookingClass === "Z"), "Expanded Bu
 assert(expandedParsed.flights[4]?.cabin === "FIRST", "Explicit First cabin on DL 1706 is retained independently of class Z");
 const expandedAiConflict = mergeSourceFlights(expandedParsed.flights, expandedParsed.flights.map((f) => ({ ...f, bookingClass: "Y", direction: "OUT" as const })));
 assert(expandedAiConflict.map((f) => f.direction).join(",") === "OUT,OUT,IN,IN,IN" && expandedAiConflict.every((f) => f.bookingClass === "Z"), "Expanded-source directions and classes beat stale AI memory");
+learnItinerary(expandedRoundTrip, expandedParsed.flights.map((f) => ({ ...f, bookingClass: "Y", direction: "OUT" as const })));
+const expandedFromStaleMemory = convert(expandedRoundTrip, null);
+assert(expandedFromStaleMemory.segments.map((s) => s.direction).join(",") === "OUT,OUT,IN,IN,IN" && expandedFromStaleMemory.segments.every((s) => s.bookingClass === "Z"), "Cached all-outbound/Y extraction cannot corrupt the expanded current source");
+forgetItineraryForText(expandedRoundTrip);
 
 console.log("=== Testing GDS Codeshare & Screenshot Scenarios ===");
 const dl8727Text = `1  DL*8727  Z 02MAR  LAX CDG  655P 250P¥1
