@@ -4,7 +4,7 @@ import { saveLearnedClass, clearLearnedClasses } from "../src/lib/cabinClasses";
 import { canSaveItinerary, learnItinerary, findLearnedItinerary, forgetItineraryForText, clearLearned } from "../src/lib/learning";
 import { shouldPrintOperatedBy } from "../src/lib/sabre";
 import { inferFleetRouteEquipment, inferRouteEquipment, lookupKnownFlight } from "../src/lib/knownFlights";
-import { ocrCleanText } from "../src/lib/parser";
+import { ocrCleanText, parseItineraryText } from "../src/lib/parser";
 
 function assert(condition: boolean, msg: string) {
   if (!condition) {
@@ -335,6 +335,21 @@ Boeing 777
 Economy (Y)`;
 const rNoDur = convert(noDurationText, null);
 assert(!rNoDur.issues.some((i) => i.text.toLowerCase().includes("duration not stated")), "Duration not stated warning never raised");
+
+console.log("=== Testing compact Sabre rows with attached RBDs and compressed airport pairs ===");
+const compactSabreText = `1 DL 389Z 03DEC Q DTWPVG SS1 1005A 315P 04DEC F /E\n2 DL6409Z 04DEC F PVGCAN SS1 915P 1210A 05DEC J /E\n3 DL6551Z 22DEC T CANPVG SS1 100P 300P /E\n4 DL 280Z 22DEC T PVGSEA SS1 525P 1205P /E\n5 DL1706Z 22DEC T SEADTW SS1 130P 850P /E`;
+const compactParsed = parseItineraryText(compactSabreText);
+assert(compactParsed.flights.length === 5, `All compact Sabre rows parsed locally, got ${compactParsed.flights.length}`);
+assert(compactParsed.flights.every((f) => f.bookingClass === "Z"), "Attached Z booking classes are preserved for all five flights");
+assert(compactParsed.flights.map((f) => f.direction).join(",") === "OUT,OUT,IN,IN,IN", "Long-stay return boundary splits the two outbound from three inbound legs");
+assert(compactParsed.flights[3]?.arrDay === 0, "PVG-SEA arrival uses same local date despite crossing midnight in UTC");
+const aiCorrupted = compactParsed.flights.map((f) => ({ ...f, bookingClass: "Y", direction: "OUT" as const }));
+const protectedCompact = mergeSourceFlights(compactParsed.flights, aiCorrupted);
+assert(protectedCompact.every((f) => f.bookingClass === "Z"), "AI fallback cannot replace printed Z booking classes with Y");
+assert(protectedCompact.map((f) => f.direction).join(",") === "OUT,OUT,IN,IN,IN", "AI fallback cannot flatten the inbound half into outbound");
+const compactResult = convert(compactSabreText, null);
+assert(compactResult.outbound.includes("DL389Z03DECDTWPVGNN1") && compactResult.outbound.includes("DL6409Z04DECPVGCANNN1"), "Outbound chain contains only the first two compact GDS sells");
+assert(compactResult.inbound.includes("DL6551Z22DECCANPVGNN1") && compactResult.inbound.includes("DL1706Z22DECSEADTWNN1"), "Inbound chain contains the final three compact GDS sells");
 
 console.log("=== Testing GDS Codeshare & Screenshot Scenarios ===");
 const dl8727Text = `1  DL*8727  Z 02MAR  LAX CDG  655P 250P¥1

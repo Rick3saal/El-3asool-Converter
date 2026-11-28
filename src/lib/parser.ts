@@ -8,7 +8,7 @@
 import { RawFlight, ParsedDate, Cabin, Issue } from "./types";
 import { airlineFromName, isAirlineCode, AIRLINE_NAMES } from "./airlines";
 import { findAircraftTokens, parseExplicitAircraftString } from "./aircraft";
-import { cityToCode, sameCity } from "./airports";
+import { cityToCode, sameCity, tzOffsetMinutes } from "./airports";
 import { lookupFlightKnowledge } from "./learning";
 import { lookupKnownFlight } from "./knownFlights";
 import { CABIN_NAME, cabinFromName, ENCLOSED_CLASS, LABELLED_CLASS, lookupCabinForClass } from "./cabinClasses";
@@ -1582,6 +1582,102 @@ export function splitDirections<T extends Directional>(items: T[]): { out: T[]; 
   return { out, inn };
 }
 
+/* ---------------- compact GDS sell-line rows ---------------- */
+
+const GDS_MONTH_NUM: Record<string, number> = {
+  JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6,
+  JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12,
+};
+
+function parseCompactGdsDate(raw: string): ParsedDate | undefined {
+  const m = /^(\d{1,2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)$/i.exec(raw);
+  if (!m) return undefined;
+  const day = Number(m[1]);
+  const month = GDS_MONTH_NUM[m[2].toUpperCase()];
+  if (!month || day < 1 || day > 31) return undefined;
+  return { day, month, raw: `${String(day).padStart(2, "0")}${m[2].toUpperCase()}` };
+}
+
+function parseCompactGdsTime(raw: string): number | undefined {
+  const m = /^(\d{1,2})(\d{2})([AP])$/i.exec(raw);
+  if (!m) return undefined;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (hour < 1 || hour > 12 || minute > 59) return undefined;
+  return timeToMin(hour, minute, m[3].toUpperCase() === "P");
+}
+
+function inferCompactGdsArrivalDay(
+  origin: string,
+  dest: string,
+  departure: number,
+  arrival: number,
+  month: number
+): 0 | 1 | 2 {
+  const originOffset = tzOffsetMinutes(origin, month);
+  const destOffset = tzOffsetMinutes(dest, month);
+  if (originOffset !== null && destOffset !== null) {
+    for (let day = 0; day <= 2; day++) {
+      const elapsed = arrival + day * 1440 - departure + originOffset - destOffset;
+      if (elapsed > 0 && elapsed <= 1440) return day as 0 | 1 | 2;
+    }
+  }
+  return arrival < departure ? 1 : 0;
+}
+
+/**
+ * Parse Sabre sell rows that combine the flight/RBD and airport pair, e.g.
+ * "DL389Z 03DEC Q DTWPVG SS1 1005A 315P 04DEC". Keeping this as a local
+ * path protects the printed booking class and lets route/date sequence drive
+ * the direction split rather than asking AI to reconstruct these fields.
+ */
+function parseCompactGdsRows(text: string): RawFlight[] | null {
+  const candidateLines = text.split("\n").filter((line) =>
+    /^\s*\d+\s+[A-Z0-9]{2}\s*\*?\s*\d{1,4}/i.test(line)
+  );
+  if (candidateLines.length < 2) return null;
+
+  const rowRe = /^\s*\d+\s+([A-Z0-9]{2})\s*\*?\s*(\d{1,4})\s*([A-Z])?\s+(\d{1,2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))\s+(?:[A-Z]\s+)?([A-Z]{6})\s+(?:SS|HK|NN)\d+\s+(\d{3,4}[AP])\s+(\d{3,4}[AP])(?:\s+(\d{1,2}(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)))?/i;
+  const raw: RawFlight[] = [];
+  for (const line of candidateLines) {
+    const m = rowRe.exec(line);
+    if (!m || !isAirlineCode(m[1])) return null;
+    const date = parseCompactGdsDate(m[4].toUpperCase());
+    const dep = parseCompactGdsTime(m[6].toUpperCase());
+    const arr = parseCompactGdsTime(m[7].toUpperCase());
+    if (!date || dep === undefined || arr === undefined) return null;
+    const origin = m[5].slice(0, 3).toUpperCase();
+    const dest = m[5].slice(3, 6).toUpperCase();
+    const arrivalDate = m[8] ? parseCompactGdsDate(m[8].toUpperCase()) : undefined;
+    const explicitGap = arrivalDate ? dateGapDays(date, arrivalDate) : null;
+    const arrDay = explicitGap !== null && explicitGap >= 0 && explicitGap <= 2
+      ? explicitGap as 0 | 1 | 2
+      : inferCompactGdsArrivalDay(origin, dest, dep, arr, date.month);
+    raw.push({
+      airline: m[1].toUpperCase(),
+      number: String(Number(m[2])),
+      origin,
+      dest,
+      date,
+      dateExplicit: true,
+      dep,
+      arr,
+      arrDay,
+      bookingClass: m[3]?.toUpperCase(),
+      elapsedExplicit: false,
+      order: raw.length,
+    });
+  }
+  if (raw.length !== candidateLines.length) return null;
+  const { out, inn } = splitDirections(raw);
+  const flights = [...out, ...inn];
+  flights.forEach((flight, index) => {
+    flight.direction = index < out.length ? "OUT" : "IN";
+    flight.order = index;
+  });
+  return flights;
+}
+
 /* ---------------- public API ---------------- */
 
 export interface ParseResult {
@@ -1631,6 +1727,10 @@ export function parsePreprocessedItinerary(text: string): ParseResult {
     });
     return { flights, issues, fastPath: true };
   }
+
+  /* Compact Sabre sell lines (local, source-authoritative path). */
+  const compactGds = parseCompactGdsRows(text);
+  if (compactGds) return { flights: compactGds, issues, fastPath: true };
 
   /* Google Flights / Style C fast path (ADDITIVE). */
   if (isGoogleFlightsStyleC(text)) {
