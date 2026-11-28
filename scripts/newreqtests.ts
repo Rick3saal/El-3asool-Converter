@@ -351,6 +351,15 @@ const compactResult = convert(compactSabreText, null);
 assert(compactResult.outbound.includes("DL389Z03DECDTWPVGNN1") && compactResult.outbound.includes("DL6409Z04DECPVGCANNN1"), "Outbound chain contains only the first two compact GDS sells");
 assert(compactResult.inbound.includes("DL6551Z22DECCANPVGNN1") && compactResult.inbound.includes("DL1706Z22DECSEADTWNN1"), "Inbound chain contains the final three compact GDS sells");
 
+const expandedRoundTrip = `Detroit (DTW) to Guangzhou (CAN) on Thu, Dec 3\nDetroit (DTW) to Shanghai (PVG) on Thu, Dec 3\n10:05 AM to 3:15 PM on Fri, Dec 4 (16h 10m)\nDelta 389\nAirbus A350\nBusiness (Z)\nLayover in PVG (6h 0m)\nShanghai (PVG) to Guangzhou (CAN) on Fri, Dec 4\n9:15 PM to 12:10 AM (2h 55m)\nDelta 6409 (operated by China Eastern)\nAirbus A321\nBusiness (Z)\nGuangzhou (CAN) to Detroit (DTW) on Tue, Dec 22\nGuangzhou (CAN) to Shanghai (PVG) on Tue, Dec 22\n1:00 PM to 3:00 PM (2h 0m)\nDelta 6551 (operated by Shanghai Airlines)\nBoeing 787\nBusiness (Z)\nLayover in PVG (2h 25m)\nShanghai (PVG) to Seattle (SEA) on Tue, Dec 22\n5:25 PM to 12:05 PM (10h 40m)\nDelta 280\nAirbus A350\nBusiness (Z)\nLayover in SEA (1h 25m)\nSeattle (SEA) to Detroit (DTW) on Tue, Dec 22\n1:30 PM to 8:50 PM on Tue, Dec 22 (4h 20m)\nDelta 1706\nBoeing 737\nFirst (Z)`;
+const expandedParsed = parseItineraryText(expandedRoundTrip);
+assert(expandedParsed.flights.length === 5, "Expanded itinerary parses all five legs locally");
+assert(expandedParsed.flights.map((f) => f.direction).join(",") === "OUT,OUT,IN,IN,IN", "Expanded reverse-route heading marks three inbound legs");
+assert(expandedParsed.flights.every((f) => f.bookingClass === "Z"), "Expanded Business/First labels preserve every Z booking class");
+assert(expandedParsed.flights[4]?.cabin === "FIRST", "Explicit First cabin on DL 1706 is retained independently of class Z");
+const expandedAiConflict = mergeSourceFlights(expandedParsed.flights, expandedParsed.flights.map((f) => ({ ...f, bookingClass: "Y", direction: "OUT" as const })));
+assert(expandedAiConflict.map((f) => f.direction).join(",") === "OUT,OUT,IN,IN,IN" && expandedAiConflict.every((f) => f.bookingClass === "Z"), "Expanded-source directions and classes beat stale AI memory");
+
 console.log("=== Testing GDS Codeshare & Screenshot Scenarios ===");
 const dl8727Text = `1  DL*8727  Z 02MAR  LAX CDG  655P 250P¥1
 AIR FRANCE &&`;
