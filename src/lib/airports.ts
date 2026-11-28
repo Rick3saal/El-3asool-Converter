@@ -99,6 +99,25 @@ export function tzOffsetMinutes(code: string, month?: number): number | null {
   return base;
 }
 
+/** Infer the local calendar-day offset using both airport time zones. */
+export function inferLocalArrivalDayOffset(
+  origin: string,
+  dest: string,
+  departure: number,
+  arrival: number,
+  month?: number
+): 0 | 1 | 2 {
+  const originOffset = tzOffsetMinutes(origin, month);
+  const destOffset = tzOffsetMinutes(dest, month);
+  if (originOffset !== null && destOffset !== null) {
+    for (let day = 0; day <= 2; day++) {
+      const elapsed = arrival + day * 1440 - departure + originOffset - destOffset;
+      if (elapsed > 0 && elapsed <= 1440) return day as 0 | 1 | 2;
+    }
+  }
+  return arrival < departure ? 1 : 0;
+}
+
 /** Estimate block/elapsed time in minutes from local clock times + timezones. */
 export function estimateElapsed(
   origin: string,

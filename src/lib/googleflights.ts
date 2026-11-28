@@ -29,6 +29,7 @@ import { parseExplicitAircraftString } from "./aircraft";
 import { cleanOperator } from "./operator";
 import { CABIN_NAME, cabinFromName, ENCLOSED_CLASS, LABELLED_CLASS } from "./cabinClasses";
 import { addDays, dateGapDays } from "./dates";
+import { inferLocalArrivalDayOffset } from "./airports";
 
 /* ------------------------------------------------------------------ */
 /* small date helpers                                                  */
@@ -59,6 +60,8 @@ interface GfLine {
   arr?: number;
   depOff?: number;
   arrOff?: number;
+  /** Whether a +1/+2 offset was printed on the time range. */
+  hasExplicitOffset?: boolean;
   /** Explicit arrival calendar date printed on a time-range line. */
   arrivalDate?: ParsedDate;
   /** DATE line that states when the leg LANDS ("Arrives Thu, Mar 18"). */
@@ -135,7 +138,7 @@ function matchTimeLine(s: string): { min: number; dayOffset: number } | null {
  *  Separator is dash (–, —, -). Arrow "→" is NOT a time-range separator here so that
  *  Matrix style "10:40 AM → 1:50 PM" does not become a Style-C timerange.
  */
-function matchTimeRangeLine(s: string): { dep: number; arr: number; depOff: number; arrOff: number; arrivalDate?: ParsedDate; minutes?: number } | null {
+function matchTimeRangeLine(s: string): { dep: number; arr: number; depOff: number; arrOff: number; hasExplicitOffset: boolean; arrivalDate?: ParsedDate; minutes?: number } | null {
   const t = s.trim();
   // Two clocks separated by a dash, or by "to" in copied itinerary cards.
   // The latter can include an arrival date and duration after the second clock.
@@ -176,7 +179,7 @@ function matchTimeRangeLine(s: string): { dep: number; arr: number; depOff: numb
   const minutes = durationPart
     ? parseInt(durationPart[1], 10) * 60 + parseInt(durationPart[2] || "0", 10)
     : undefined;
-  return { dep, arr, depOff, arrOff, arrivalDate, minutes };
+  return { dep, arr, depOff, arrOff, hasExplicitOffset: m[4] !== undefined || m[8] !== undefined, arrivalDate, minutes };
 }
 
 function matchDateLine(s: string): ParsedDate | null {
@@ -678,9 +681,17 @@ export function parseGoogleFlightsStyleC(text: string): RawFlight[] | null {
       // the printed arrival date is measured against THIS leg's departure date
       const gap = dateGapDays(date, explicitArrival);
       if (gap !== null && gap >= 0 && gap <= 2) arrDay = gap;
+    } else if (
+      !chosenTimerange?.hasExplicitOffset && date && origin && dest &&
+      dep !== undefined && arr !== undefined
+    ) {
+      // For westbound flights the destination's local clock can be earlier
+      // on the SAME calendar date (e.g. PVG 5:25 PM → SEA 12:05 PM).
+      arrDay = inferLocalArrivalDayOffset(origin, dest, dep, arr, date.month);
+    } else if (arrDay === 0 && dep !== undefined && arr !== undefined && arr < dep) {
+      arrDay = 1;
     }
     if (arrDay < 0) arrDay = 0;
-    if (arrDay === 0 && dep !== undefined && arr !== undefined && arr < dep) arrDay = 1;
     if (arrDay > 2) arrDay = 2;
 
     /* ---- marketing carrier + equipment, resolved per leg ---- */
