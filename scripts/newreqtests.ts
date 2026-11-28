@@ -1,7 +1,7 @@
 import { convertToSabre as convert, mergeAiFallback, mergeSourceFlights } from "../src/lib/converter";
 import { shouldAutoRunAi } from "../src/lib/ai";
 import { saveLearnedClass, clearLearnedClasses } from "../src/lib/cabinClasses";
-import { canSaveItinerary, learnItinerary, findLearnedItinerary, forgetItineraryForText, clearLearned } from "../src/lib/learning";
+import { canSaveItinerary, learnItinerary, learnFlight, findLearnedItinerary, forgetItineraryForText, clearLearned } from "../src/lib/learning";
 import { shouldPrintOperatedBy } from "../src/lib/sabre";
 import { inferFleetRouteEquipment, inferRouteEquipment, lookupKnownFlight } from "../src/lib/knownFlights";
 import { ocrCleanText, parseItineraryText } from "../src/lib/parser";
@@ -351,7 +351,7 @@ const compactResult = convert(compactSabreText, null);
 assert(compactResult.outbound.includes("DL389Z03DECDTWPVGNN1") && compactResult.outbound.includes("DL6409Z04DECPVGCANNN1"), "Outbound chain contains only the first two compact GDS sells");
 assert(compactResult.inbound.includes("DL6551Z22DECCANPVGNN1") && compactResult.inbound.includes("DL1706Z22DECSEADTWNN1"), "Inbound chain contains the final three compact GDS sells");
 
-const expandedRoundTrip = `Detroit (DTW) to Guangzhou (CAN) on Thu, Dec 3\nDetroit (DTW) to Shanghai (PVG) on Thu, Dec 3\n10:05 AM to 3:15 PM on Fri, Dec 4 (16h 10m)\nDelta 389\nAirbus A350\nBusiness (Z)\nLayover in PVG (6h 0m)\nShanghai (PVG) to Guangzhou (CAN) on Fri, Dec 4\n9:15 PM to 12:10 AM (2h 55m)\nDelta 6409 (operated by China Eastern)\nAirbus A321\nBusiness (Z)\nGuangzhou (CAN) to Detroit (DTW) on Tue, Dec 22\nGuangzhou (CAN) to Shanghai (PVG) on Tue, Dec 22\n1:00 PM to 3:00 PM (2h 0m)\nDelta 6551 (operated by Shanghai Airlines)\nBoeing 787\nBusiness (Z)\nLayover in PVG (2h 25m)\nShanghai (PVG) to Seattle (SEA) on Tue, Dec 22\n5:25 PM to 12:05 PM (10h 40m)\nDelta 280\nAirbus A350\nBusiness (Z)\nLayover in SEA (1h 25m)\nSeattle (SEA) to Detroit (DTW) on Tue, Dec 22\n1:30 PM to 8:50 PM on Tue, Dec 22 (4h 20m)\nDelta 1706\nBoeing 737\nFirst (Z)`;
+const expandedRoundTrip = `Detroit (DTW) to Guangzhou (CAN) on Thu, Dec 3 Long layover\nDetroit (DTW) to Shanghai (PVG) on Thu, Dec 3\n10:05 AM to 3:15 PM on Fri, Dec 4 (16h 10m)\nDelta 389\nAirbus A350\nBusiness (Z)\nLayover in PVG (6h 0m)\nShanghai (PVG) to Guangzhou (CAN) on Fri, Dec 4\n9:15 PM to 12:10 AM (2h 55m)\nDelta 6409 (operated by China Eastern)\nAirbus A321\nBusiness (Z)\nGuangzhou (CAN) to Detroit (DTW) on Tue, Dec 22\nGuangzhou (CAN) to Shanghai (PVG) on Tue, Dec 22\n1:00 PM to 3:00 PM (2h 0m)\nDelta 6551 (operated by Shanghai Airlines)\nBoeing 787\nBusiness (Z)\nLayover in PVG (2h 25m)\nShanghai (PVG) to Seattle (SEA) on Tue, Dec 22\n5:25 PM to 12:05 PM (10h 40m)\nDelta 280\nAirbus A350\nBusiness (Z)\nLayover in SEA (1h 25m)\nSeattle (SEA) to Detroit (DTW) on Tue, Dec 22\n1:30 PM to 8:50 PM on Tue, Dec 22 (4h 20m)\nDelta 1706\nBoeing 737\nFirst (Z)`;
 const expandedParsed = parseItineraryText(expandedRoundTrip);
 assert(expandedParsed.flights.length === 5, "Expanded itinerary parses all five legs locally");
 assert(expandedParsed.flights.map((f) => f.direction).join(",") === "OUT,OUT,IN,IN,IN", "Expanded reverse-route heading marks three inbound legs");
@@ -363,6 +363,13 @@ learnItinerary(expandedRoundTrip, expandedParsed.flights.map((f) => ({ ...f, boo
 const expandedFromStaleMemory = convert(expandedRoundTrip, null);
 assert(expandedFromStaleMemory.segments.map((s) => s.direction).join(",") === "OUT,OUT,IN,IN,IN" && expandedFromStaleMemory.segments.every((s) => s.bookingClass === "Z"), "Cached all-outbound/Y extraction cannot corrupt the expanded current source");
 forgetItineraryForText(expandedRoundTrip);
+const expandedCurrent = convert(expandedRoundTrip, null);
+assert(expandedCurrent.segments[3]?.arrDay === 0, "Expanded PVG-SEA leg arrives on the same local date");
+expandedCurrent.segments.forEach((segment) => learnFlight({ ...segment, direction: "OUT", arrDay: 1 }, { source: "ai" }));
+const expandedAfterFlightMemory = convert(expandedRoundTrip, null);
+assert(expandedAfterFlightMemory.segments.map((s) => s.direction).join(",") === "OUT,OUT,IN,IN,IN", "Per-flight AI memory cannot overwrite current inferred direction");
+assert(expandedAfterFlightMemory.segments[3]?.arrDay === 0, "Per-flight AI memory cannot add a false next-day marker to PVG-SEA");
+clearLearned();
 
 console.log("=== Testing GDS Codeshare & Screenshot Scenarios ===");
 const dl8727Text = `1  DL*8727  Z 02MAR  LAX CDG  655P 250P¥1

@@ -8,7 +8,7 @@
 import { RawFlight, ParsedDate, Cabin, Issue } from "./types";
 import { airlineFromName, isAirlineCode, AIRLINE_NAMES } from "./airlines";
 import { findAircraftTokens, parseExplicitAircraftString } from "./aircraft";
-import { cityToCode, sameCity, tzOffsetMinutes } from "./airports";
+import { cityToCode, inferLocalArrivalDayOffset, sameCity } from "./airports";
 import { lookupFlightKnowledge } from "./learning";
 import { lookupKnownFlight } from "./knownFlights";
 import { CABIN_NAME, cabinFromName, ENCLOSED_CLASS, LABELLED_CLASS, lookupCabinForClass } from "./cabinClasses";
@@ -1174,6 +1174,11 @@ function parseGeneric(text: string): { works: Work[]; issues: Issue[] } {
       const off = dayoffs[0].offset!;
       w.arrDay = off;
       w.arrDayExplicit = true;
+    } else if (!w.arrDayFromDate && w.dep !== undefined && w.arr !== undefined && w.origin && w.dest && w.date) {
+      // Compare times in local airport time, not as if both clocks were UTC.
+      // A westbound PVG→SEA flight can leave at 5:25 PM and land at 12:05 PM
+      // on the SAME local date even though the arrival clock is earlier.
+      w.arrDay = inferLocalArrivalDayOffset(w.origin, w.dest, w.dep, w.arr, w.date.month);
     } else if (!w.arrDayFromDate && w.dep !== undefined && w.arr !== undefined && w.arr < w.dep) {
       w.arrDay = 1;
     }
@@ -1607,24 +1612,6 @@ function parseCompactGdsTime(raw: string): number | undefined {
   return timeToMin(hour, minute, m[3].toUpperCase() === "P");
 }
 
-function inferCompactGdsArrivalDay(
-  origin: string,
-  dest: string,
-  departure: number,
-  arrival: number,
-  month: number
-): 0 | 1 | 2 {
-  const originOffset = tzOffsetMinutes(origin, month);
-  const destOffset = tzOffsetMinutes(dest, month);
-  if (originOffset !== null && destOffset !== null) {
-    for (let day = 0; day <= 2; day++) {
-      const elapsed = arrival + day * 1440 - departure + originOffset - destOffset;
-      if (elapsed > 0 && elapsed <= 1440) return day as 0 | 1 | 2;
-    }
-  }
-  return arrival < departure ? 1 : 0;
-}
-
 /**
  * Parse Sabre sell rows that combine the flight/RBD and airport pair, e.g.
  * "DL389Z 03DEC Q DTWPVG SS1 1005A 315P 04DEC". Keeping this as a local
@@ -1652,7 +1639,7 @@ function parseCompactGdsRows(text: string): RawFlight[] | null {
     const explicitGap = arrivalDate ? dateGapDays(date, arrivalDate) : null;
     const arrDay = explicitGap !== null && explicitGap >= 0 && explicitGap <= 2
       ? explicitGap as 0 | 1 | 2
-      : inferCompactGdsArrivalDay(origin, dest, dep, arr, date.month);
+      : inferLocalArrivalDayOffset(origin, dest, dep, arr, date.month);
     raw.push({
       airline: m[1].toUpperCase(),
       number: String(Number(m[2])),

@@ -450,7 +450,7 @@ Business (P)`;
 2 AC 3 29MAR YVR NRT 100P 255P¥1 787 9.55 0 N  CABIN-BUSINESS
 3 GK 339 30MAR NRT OKA 705P 1010P 320 3.05 0 N  CABIN-ECONOMY
 4 JL 2084 15APR OKA ITM 1205P 155P 350 1.50 0 N  CABIN-BUSINESS
-5 AC 24 15APR KIX YVR 600P 1115A¥1 787 9.15 0 N  CABIN-BUSINESS
+5 AC 24 15APR KIX YVR 600P 1115A 787 9.15 0 N  CABIN-BUSINESS
 6 AC 8766 15APR YVR SAN 300P 600P 900 3.00 0 N  CABIN-BUSINESS
 *YVR-SAN OPERATED BY AIR CANADA EXPRESS - JAZZ
 
@@ -866,7 +866,7 @@ Economy (Y) `;
     flights: [
       { airline: "AA", flightNumber: 5806, origin: "ALB", destination: "PHL", date: { day: 28, month: 12 }, departure: "15:08", arrival: "16:35", durationMinutes: 87, aircraft: "Embraer ERJ-145", cabin: "ECONOMY", bookingClass: "Y", operatedBy: "Piedmont Airlines As American Eagle" },
       { airline: "AA", flightNumber: 897, origin: "PHL", destination: "LAX", date: { day: 28, month: 12 }, departure: "18:35", arrival: "21:50", durationMinutes: 375, aircraft: "Airbus A321neo", cabin: "FIRST", bookingClass: "R" },
-      { airline: "AA", flightNumber: 83, origin: "LAX", destination: "AKL", date: { day: 28, month: 12 }, departure: "23:35", arrival: "09:55", arrivalDayOffset: 1, durationMinutes: 800, aircraft: "Boeing 787", cabin: "BUSINESS", bookingClass: "R" },
+      { airline: "AA", flightNumber: 83, origin: "LAX", destination: "AKL", date: { day: 28, month: 12 }, departure: "23:35", arrival: "09:55", arrivalDayOffset: 2, durationMinutes: 800, aircraft: "Boeing 787", cabin: "BUSINESS", bookingClass: "R" },
       { airline: "AA", flightNumber: 9035, origin: "AKL", destination: "ZQN", date: { day: 30, month: 12 }, departure: "14:25", arrival: "16:15", durationMinutes: 110, aircraft: "Airbus A320", cabin: "ECONOMY", bookingClass: "Y", operatedBy: "Jetstar" },
     ],
   });

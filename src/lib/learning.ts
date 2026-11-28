@@ -39,6 +39,9 @@ export interface FlightCorrection {
   bookingClass: string;
   /** true when this record came from an AI read rather than a human edit */
   cabinFromAi?: boolean;
+  /** Per-field provenance for values that should not override current parsed rows. */
+  directionFromAi?: boolean;
+  arrDayFromAi?: boolean;
   operatedBy?: string;
   direction: Direction;
   arrDay: 0 | 1 | 2;
@@ -284,9 +287,11 @@ export function learnFlight(seg: Segment, opts: LearnFlightOptions = {}): void {
     cabin: fromAi ? prev?.cabin ?? seg.cabin : seg.cabin,
     bookingClass: fromAi ? prev?.bookingClass ?? seg.bookingClass : seg.bookingClass,
     cabinFromAi: fromAi ? prev?.cabinFromAi ?? true : false,
-    operatedBy: seg.operatedBy,
-    direction: seg.direction,
-    arrDay: seg.arrDay,
+    operatedBy: fromAi && prev && prev.cabinFromAi === false ? prev.operatedBy : seg.operatedBy,
+    direction: fromAi && prev && (prev.directionFromAi === false || prev.cabinFromAi === false) ? prev.direction : seg.direction,
+    directionFromAi: fromAi ? prev?.directionFromAi ?? prev?.cabinFromAi ?? true : false,
+    arrDay: fromAi && prev && (prev.arrDayFromAi === false || prev.cabinFromAi === false) ? prev.arrDay : seg.arrDay,
+    arrDayFromAi: fromAi ? prev?.arrDayFromAi ?? prev?.cabinFromAi ?? true : false,
     updatedAt: Date.now(),
   };
   const map = flightMap();
@@ -590,8 +595,12 @@ export function applyLearned(segments: Segment[]): Segment[] {
         !stated.bookingClass && !fromAi && corr.bookingClass ? corr.bookingClass : s.bookingClass,
       operatedBy:
         !aiBlocked("operatedBy") && corr.operatedBy !== undefined ? corr.operatedBy : s.operatedBy,
-      direction: corr.direction || s.direction,
-      arrDay: corr.arrDay ?? s.arrDay,
+      // AI memory can be stale about whether a segment is inbound or crosses
+      // midnight. The current conversion already has a direction/day offset
+      // (from source parsing or the current AI fallback), so only a human edit
+      // may override those values from a stored correction.
+      direction: (corr.directionFromAi ?? fromAi) ? s.direction : corr.direction || s.direction,
+      arrDay: (corr.arrDayFromAi ?? fromAi) ? s.arrDay : corr.arrDay ?? s.arrDay,
     };
   });
 }
