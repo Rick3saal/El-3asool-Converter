@@ -371,6 +371,15 @@ assert(expandedAfterFlightMemory.segments.map((s) => s.direction).join(",") === 
 assert(expandedAfterFlightMemory.segments[3]?.arrDay === 0, "Per-flight AI memory cannot add a false next-day marker to PVG-SEA");
 clearLearned();
 
+const differentRoundTrip = `1 UA 84J 03JAN Q JFKLHR SS1 800A 800P\n2 UA 85J 12JAN M LHRJFK SS1 1000A 125P`;
+const differentRoundTripLocal = convert(differentRoundTrip, null);
+assert(differentRoundTripLocal.segments.map((s) => s.direction).join(",") === "OUT,IN", "A separate United round trip is split outbound/inbound without flight-specific rules");
+differentRoundTripLocal.segments.forEach((segment) => learnFlight({ ...segment, direction: "OUT", arrDay: 1 }, { source: "ai" }));
+const differentRoundTripCached = convert(differentRoundTrip, null);
+assert(differentRoundTripCached.segments.map((s) => s.direction).join(",") === "OUT,IN", "Stale AI directions cannot flatten another carrier's return trip");
+assert(differentRoundTripCached.segments.every((s) => s.bookingClass === "J"), "Another carrier's cached AI read preserves both source booking classes");
+clearLearned();
+
 console.log("=== Testing GDS Codeshare & Screenshot Scenarios ===");
 const dl8727Text = `1  DL*8727  Z 02MAR  LAX CDG  655P 250P¥1
 AIR FRANCE &&`;
